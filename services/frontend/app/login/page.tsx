@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { login } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
+import { SocialLoginButtons } from "@/components/auth/SocialLoginButtons";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
@@ -29,6 +30,14 @@ export default function LoginPage() {
   return (
     <div className="mx-auto mt-24 max-w-sm px-4">
       <h1 className="mb-6 text-lg font-semibold text-slate-100">Log in</h1>
+
+      <SocialLoginButtons />
+      <div className="my-4 flex items-center gap-3 text-xs text-slate-600">
+        <div className="h-px flex-1 bg-slate-800" />
+        or
+        <div className="h-px flex-1 bg-slate-800" />
+      </div>
+
       <form onSubmit={handleSubmit} className="space-y-4">
         <Field label="Email" type="email" value={email} onChange={setEmail} autoComplete="email" />
         <Field label="Password" type="password" value={password} onChange={setPassword} autoComplete="current-password" />

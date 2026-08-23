@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { signup } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
+import { SocialLoginButtons } from "@/components/auth/SocialLoginButtons";
 
 export default function SignupPage() {
   return (
@@ -51,6 +52,14 @@ function SignupForm() {
       <h1 className="mb-6 text-lg font-semibold text-slate-100">
         {inviteToken ? "Accept invite" : "Create your organization"}
       </h1>
+
+      <SocialLoginButtons inviteToken={inviteToken || undefined} />
+      <div className="my-4 flex items-center gap-3 text-xs text-slate-600">
+        <div className="h-px flex-1 bg-slate-800" />
+        or
+        <div className="h-px flex-1 bg-slate-800" />
+      </div>
+
       <form onSubmit={handleSubmit} className="space-y-4">
         <Field label="Email" type="email" value={email} onChange={setEmail} autoComplete="email" />
         <Field label="Password" type="password" value={password} onChange={setPassword} autoComplete="new-password" />
