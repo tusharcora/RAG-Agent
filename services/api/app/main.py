@@ -7,7 +7,7 @@ from app.core.config import settings
 from app.core.telemetry import instrument_app, setup_telemetry
 from app.core.queue import get_queue_connection, close_queue_connection
 from app.core.db import init_engine, dispose_engine
-from app.api.routes import health, events, notion_oauth, jira_oauth, sync, query, sessions, connections, documents
+from app.api.routes import health, events, notion_oauth, jira_oauth, sync, query, sessions, connections, documents, auth
 
 
 @asynccontextmanager
@@ -39,6 +39,7 @@ instrument_app(app)
 
 app.include_router(health.router, tags=["health"])
 app.include_router(events.router, prefix="/events", tags=["events"])
+app.include_router(auth.router, prefix="/auth", tags=["auth"])
 
 app.include_router(notion_oauth.router, prefix="/oauth/notion", tags=["rag-agent"])
 app.include_router(jira_oauth.router, prefix="/oauth/jira", tags=["rag-agent"])

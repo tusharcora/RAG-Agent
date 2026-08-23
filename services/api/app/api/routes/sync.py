@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
-from app.core.auth import require_api_key
+from app.core.auth import AuthContext, require_auth_or_service_token
 from app.core.config import settings
 from app.core.db import get_session
 from app.core.queue import publish_event
@@ -16,7 +16,7 @@ from app.models.rag import OAuthConnection
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(dependencies=[Depends(require_api_key)])
+router = APIRouter()
 
 NOTION_SEARCH_URL = "https://api.notion.com/v1/search"
 JIRA_SEARCH_URL_TMPL = "https://api.atlassian.com/ex/jira/{cloud_id}/rest/api/3/search"
@@ -43,8 +43,10 @@ async def _request(client: httpx.AsyncClient, method: str, url: str, **kwargs) -
     return resp
 
 
-async def _get_connection(session: AsyncSession, provider: str) -> OAuthConnection:
-    result = await session.execute(select(OAuthConnection).where(OAuthConnection.provider == provider))
+async def _get_connection(session: AsyncSession, provider: str, org_id) -> OAuthConnection:
+    result = await session.execute(
+        select(OAuthConnection).where(OAuthConnection.provider == provider, OAuthConnection.org_id == org_id)
+    )
     connection = result.scalar_one_or_none()
     if connection is None:
         raise HTTPException(
@@ -54,11 +56,13 @@ async def _get_connection(session: AsyncSession, provider: str) -> OAuthConnecti
 
 
 @router.post("/notion", dependencies=[Depends(rate_limiter("sync_notion", settings.rate_limit_sync_per_minute))])
-async def sync_notion(session: AsyncSession = Depends(get_session)) -> dict:
+async def sync_notion(
+    auth: AuthContext = Depends(require_auth_or_service_token), session: AsyncSession = Depends(get_session)
+) -> dict:
     """Enumerates all pages via Notion's /search and publishes one
     rag.notion_page_updated event per page — no embedding work happens here,
     it's all handled by the worker off the queue."""
-    connection = await _get_connection(session, "notion")
+    connection = await _get_connection(session, "notion", auth.org_id)
 
     published = 0
     truncated = False
@@ -84,8 +88,17 @@ async def sync_notion(session: AsyncSession = Depends(get_session)) -> dict:
                 await publish_event(
                     session,
                     routing_key="rag.notion_page_updated",
-                    payload={"page_id": page["id"], "connection_id": str(connection.id)},
-                    dedupe_key=f"notion:{page['id']}:{page.get('last_edited_time', '')}",
+                    payload={
+                        "page_id": page["id"],
+                        "connection_id": str(connection.id),
+                        "org_id": str(connection.org_id),
+                    },
+                    # Scoped by connection_id (unique per org+provider), not just page_id —
+                    # otherwise two orgs' page ids could collide in the global-namespaced
+                    # dedupe Redis key and one org's event would be dropped as a false
+                    # "duplicate" of another's.
+                    dedupe_key=f"notion:{connection.id}:{page['id']}:{page.get('last_edited_time', '')}",
+                    org_id=connection.org_id,
                 )
                 published += 1
 
@@ -98,10 +111,12 @@ async def sync_notion(session: AsyncSession = Depends(get_session)) -> dict:
 
 
 @router.post("/jira", dependencies=[Depends(rate_limiter("sync_jira", settings.rate_limit_sync_per_minute))])
-async def sync_jira(session: AsyncSession = Depends(get_session)) -> dict:
+async def sync_jira(
+    auth: AuthContext = Depends(require_auth_or_service_token), session: AsyncSession = Depends(get_session)
+) -> dict:
     """Enumerates issues via Jira's /search (JQL) and publishes one
     rag.jira_issue_updated event per issue."""
-    connection = await _get_connection(session, "jira")
+    connection = await _get_connection(session, "jira", auth.org_id)
     access_token = await ensure_fresh_token(session, connection)
 
     published = 0
@@ -129,8 +144,12 @@ async def sync_jira(session: AsyncSession = Depends(get_session)) -> dict:
                         "issue_id": issue["id"],
                         "issue_key": issue["key"],
                         "connection_id": str(connection.id),
+                        "org_id": str(connection.org_id),
                     },
-                    dedupe_key=f"jira:{issue['id']}:{issue.get('fields', {}).get('updated', '')}",
+                    # See sync_notion's dedupe_key comment — Jira issue ids are small ints
+                    # local to one Jira site and WILL collide across two orgs' sites.
+                    dedupe_key=f"jira:{connection.id}:{issue['id']}:{issue.get('fields', {}).get('updated', '')}",
+                    org_id=connection.org_id,
                 )
                 published += 1
 

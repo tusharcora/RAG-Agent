@@ -9,6 +9,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import AuthContext, require_auth
 from app.core.config import settings
 from app.core.db import get_session
 from app.core.redis import get_redis
@@ -25,9 +26,11 @@ JIRA_SCOPES = "read:jira-work read:jira-user offline_access"
 
 
 @router.get("/authorize")
-async def authorize() -> RedirectResponse:
+async def authorize(auth: AuthContext = Depends(require_auth)) -> RedirectResponse:
+    # See notion_oauth.py's /authorize for why org_id is threaded through the
+    # CSRF state value rather than a separate side-channel.
     state = secrets.token_urlsafe(32)
-    await get_redis().set(f"oauth_state:jira:{state}", "1", ex=settings.oauth_state_ttl_seconds)
+    await get_redis().set(f"oauth_state:jira:{state}", str(auth.org_id), ex=settings.oauth_state_ttl_seconds)
 
     params = {
         "audience": "api.atlassian.com",
@@ -49,9 +52,11 @@ async def callback(
 ) -> RedirectResponse:
     redis = get_redis()
     state_key = f"oauth_state:jira:{state}"
-    if not await redis.get(state_key):
+    org_id_raw = await redis.get(state_key)
+    if not org_id_raw:
         raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
     await redis.delete(state_key)
+    org_id = uuid.UUID(org_id_raw)
 
     async with httpx.AsyncClient(timeout=30) as client:
         token_resp = await client.post(
@@ -79,10 +84,12 @@ async def callback(
     site = resources[0]  # single-tenant: first accessible site
 
     now = datetime.now(timezone.utc)
-    result = await session.execute(select(OAuthConnection).where(OAuthConnection.provider == "jira"))
+    result = await session.execute(
+        select(OAuthConnection).where(OAuthConnection.provider == "jira", OAuthConnection.org_id == org_id)
+    )
     connection = result.scalar_one_or_none()
     if connection is None:
-        connection = OAuthConnection(id=uuid.uuid4(), provider="jira", access_token="")
+        connection = OAuthConnection(id=uuid.uuid4(), org_id=org_id, provider="jira", access_token="")
         session.add(connection)
 
     connection.workspace_id = site["id"]  # Jira Cloud id, used in api.atlassian.com/ex/jira/{id}/... calls

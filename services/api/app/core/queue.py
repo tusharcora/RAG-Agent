@@ -45,7 +45,11 @@ async def close_queue_connection() -> None:
 
 
 async def publish_event(
-    session: AsyncSession, routing_key: str, payload: dict[str, Any], dedupe_key: str
+    session: AsyncSession,
+    routing_key: str,
+    payload: dict[str, Any],
+    dedupe_key: str,
+    org_id: uuid.UUID | None = None,
 ) -> uuid.UUID:
     """Publishes an event onto the shared exchange and records it in
     `event_log` (status starts at "received"; the worker moves it through
@@ -70,6 +74,7 @@ async def publish_event(
         payload=payload,
         status="received",
         trace_id=current_trace_id_hex(),
+        org_id=org_id,
     )
     session.add(event)
     await session.commit()

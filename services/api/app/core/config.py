@@ -49,9 +49,19 @@ class Settings(BaseSettings):
 
     rate_limit_query_per_minute: int = 10
     rate_limit_sync_per_minute: int = 2
+    rate_limit_login_per_minute: int = 10
 
-    # Empty = disabled (local dev default). Set to require X-API-Key on /sync/* and /query.
-    api_shared_secret: str = ""
+    # --- Auth ---
+    # Unlike the old api_shared_secret's deliberate "empty = disabled" local-dev
+    # default, an empty jwt_secret has no safe meaning once real user accounts
+    # exist — Settings.__init__ below fails closed outside `environment == "local"`.
+    jwt_secret: str = ""
+    jwt_algorithm: str = "HS256"
+    jwt_expires_seconds: int = 60 * 60 * 24  # 24h, no refresh-token rotation in v1
+
+    def model_post_init(self, __context) -> None:
+        if not self.jwt_secret and self.environment != "local":
+            raise RuntimeError("JWT_SECRET must be set outside local development")
 
 
 settings = Settings()

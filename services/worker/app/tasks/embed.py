@@ -47,8 +47,14 @@ async def _sync_document(
     combined_content = "\n\n".join(text for text, _ in sections if text)
     content_hash = hashlib.sha256(combined_content.encode()).hexdigest()
 
+    # Scoped by connection_id, not just (source, external_id) — Jira issue ids are
+    # small ints local to one Jira site, so two different orgs' sites can collide
+    # on external_id. Without this filter a colliding id would silently merge one
+    # org's document with another org's content.
     result = await session.execute(
-        select(Document).where(Document.source == source, Document.external_id == external_id)
+        select(Document).where(
+            Document.source == source, Document.external_id == external_id, Document.connection_id == connection_id
+        )
     )
     document = result.scalar_one_or_none()
 

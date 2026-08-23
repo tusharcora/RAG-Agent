@@ -9,6 +9,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import AuthContext, require_auth
 from app.core.config import settings
 from app.core.db import get_session
 from app.core.redis import get_redis
@@ -23,9 +24,16 @@ NOTION_TOKEN_URL = "https://api.notion.com/v1/oauth/token"
 
 
 @router.get("/authorize")
-async def authorize() -> RedirectResponse:
+async def authorize(auth: AuthContext = Depends(require_auth)) -> RedirectResponse:
+    # /authorize is hit directly by the frontend (unlike /callback, which is
+    # hit by Notion's redirect and can't carry an app auth header), so it can
+    # sit behind require_auth. Storing org_id as the CSRF state's Redis value
+    # is the whole org-attribution mechanism — no other side-channel needed:
+    # if this key expires before /callback runs, org attribution and CSRF
+    # validity are lost together and /callback cleanly 400s, same as a CSRF
+    # failure does today.
     state = secrets.token_urlsafe(32)
-    await get_redis().set(f"oauth_state:notion:{state}", "1", ex=settings.oauth_state_ttl_seconds)
+    await get_redis().set(f"oauth_state:notion:{state}", str(auth.org_id), ex=settings.oauth_state_ttl_seconds)
 
     params = {
         "client_id": settings.notion_client_id,
@@ -45,9 +53,11 @@ async def callback(
 ) -> RedirectResponse:
     redis = get_redis()
     state_key = f"oauth_state:notion:{state}"
-    if not await redis.get(state_key):
+    org_id_raw = await redis.get(state_key)
+    if not org_id_raw:
         raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
     await redis.delete(state_key)
+    org_id = uuid.UUID(org_id_raw)
 
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
@@ -58,11 +68,13 @@ async def callback(
         resp.raise_for_status()
         data = resp.json()
 
-    result = await session.execute(select(OAuthConnection).where(OAuthConnection.provider == "notion"))
+    result = await session.execute(
+        select(OAuthConnection).where(OAuthConnection.provider == "notion", OAuthConnection.org_id == org_id)
+    )
     connection = result.scalar_one_or_none()
     if connection is None:
-        # UNIQUE(provider): single-tenant — reconnecting overwrites the prior connection.
-        connection = OAuthConnection(id=uuid.uuid4(), provider="notion", access_token="")
+        # UNIQUE(org_id, provider): reconnecting overwrites this org's prior connection.
+        connection = OAuthConnection(id=uuid.uuid4(), org_id=org_id, provider="notion", access_token="")
         session.add(connection)
 
     connection.workspace_id = data.get("workspace_id", "")
