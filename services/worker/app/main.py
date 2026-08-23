@@ -5,6 +5,7 @@ import logging
 import aio_pika
 from aio_pika import ExchangeType, Message
 from aio_pika.abc import AbstractIncomingMessage, AbstractExchange
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.core.config import settings
 from app.core.telemetry import setup_telemetry, tracer
@@ -106,12 +107,28 @@ async def handle_message(message: AbstractIncomingMessage) -> None:
                 await _republish_with_retry(message, next_retry_count)
 
 
+@retry(
+    reraise=True,
+    stop=stop_after_attempt(10),
+    wait=wait_exponential(multiplier=1, min=1, max=10),
+    before_sleep=lambda retry_state: logger.warning(
+        "RabbitMQ not ready yet (attempt %s), retrying: %s", retry_state.attempt_number, retry_state.outcome.exception()
+    ),
+)
+async def _connect_robust():
+    return await aio_pika.connect_robust(settings.rabbitmq_url)
+
+
 async def main() -> None:
     global _events_exchange
 
     setup_telemetry()
     await init_engine()
-    connection = await aio_pika.connect_robust(settings.rabbitmq_url)
+    # See services/api/app/core/queue.py's get_queue_connection() for why the
+    # initial connect (not just connect_robust's post-connect reconnection
+    # logic) needs its own retry — docker-compose's service_healthy dependency
+    # doesn't fully close the race against RabbitMQ's AMQP listener coming up.
+    connection = await _connect_robust()
     channel = await connection.channel()
     await channel.set_qos(prefetch_count=settings.prefetch_count)
 

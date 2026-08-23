@@ -3,7 +3,7 @@
 import { Suspense, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { signup } from "@/lib/api";
+import { ApiError, signup } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { SocialLoginButtons } from "@/components/auth/SocialLoginButtons";
 
@@ -40,8 +40,17 @@ function SignupForm() {
         invite_token: inviteToken || undefined,
       });
       await refresh();
-    } catch {
-      setError("Could not create account — the email may already be registered.");
+    } catch (err) {
+      // Distinguish an actual duplicate-email rejection (409) from every
+      // other failure — a blanket guess here is actively misleading when the
+      // real cause is a down/unreachable API, a bad invite token, etc.
+      if (err instanceof ApiError && err.status === 409) {
+        setError("That email is already registered — try logging in instead.");
+      } else if (err instanceof ApiError && err.status === 400) {
+        setError("That invite link looks invalid or expired.");
+      } else {
+        setError("Couldn't reach the server. Check your connection and try again.");
+      }
     } finally {
       setSubmitting(false);
     }

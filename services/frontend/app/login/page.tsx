@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { login } from "@/lib/api";
+import { ApiError, login } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { SocialLoginButtons } from "@/components/auth/SocialLoginButtons";
 
@@ -20,8 +20,12 @@ export default function LoginPage() {
     try {
       await login(email, password);
       await refresh();
-    } catch {
-      setError("Invalid email or password.");
+    } catch (err) {
+      if (err instanceof ApiError && (err.status === 401 || err.status === 429)) {
+        setError(err.status === 429 ? "Too many attempts — try again in a minute." : "Invalid email or password.");
+      } else {
+        setError("Couldn't reach the server. Check your connection and try again.");
+      }
     } finally {
       setSubmitting(false);
     }

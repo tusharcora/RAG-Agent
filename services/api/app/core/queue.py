@@ -7,6 +7,7 @@ import aio_pika
 from aio_pika import ExchangeType, Message
 from aio_pika.abc import AbstractRobustConnection
 from sqlalchemy.ext.asyncio import AsyncSession
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.core.config import settings
 from app.core.telemetry import current_trace_id_hex
@@ -20,10 +21,31 @@ DLQ_EXCHANGE = "backbone.events.dlq"
 _connection: AbstractRobustConnection | None = None
 
 
+@retry(
+    reraise=True,
+    stop=stop_after_attempt(10),
+    wait=wait_exponential(multiplier=1, min=1, max=10),
+    before_sleep=lambda retry_state: logger.warning(
+        "RabbitMQ not ready yet (attempt %s), retrying: %s", retry_state.attempt_number, retry_state.outcome.exception()
+    ),
+)
+async def _connect_robust() -> AbstractRobustConnection:
+    return await aio_pika.connect_robust(settings.rabbitmq_url)
+
+
 async def get_queue_connection() -> AbstractRobustConnection:
+    """`depends_on: condition: service_healthy` in docker-compose.yml usually
+    means RabbitMQ is ready before this ever runs, but its healthcheck can
+    pass a moment before the AMQP listener actually accepts connections — a
+    narrow but real race, especially on a cold `docker compose up`. Retrying
+    the initial connect (not just relying on connect_robust's *post-connect*
+    reconnection logic, which doesn't cover this first-attempt failure) means
+    a losing race here degrades to a slow-but-successful startup rather than
+    a crashed app that requires a manual restart to recover from.
+    """
     global _connection
     if _connection is None or _connection.is_closed:
-        _connection = await aio_pika.connect_robust(settings.rabbitmq_url)
+        _connection = await _connect_robust()
         channel = await _connection.channel()
 
         # Main topic exchange: routing_key = "<project>.<event_type>", e.g. "rag.notion_page_updated"
