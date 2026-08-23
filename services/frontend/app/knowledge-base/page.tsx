@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { getDocuments } from "@/lib/api";
 import { DocumentTable } from "@/components/knowledge-base/DocumentTable";
 import { DocumentDetailDrawer } from "@/components/knowledge-base/DocumentDetailDrawer";
+import { StatTile } from "@/components/StatTile";
 import type { DocumentSummary } from "@/lib/types";
 
 const PAGE_SIZE = 25;
@@ -30,8 +31,12 @@ export default function KnowledgeBasePage() {
   return (
     <div className="mx-auto flex h-[calc(100vh-57px)] max-w-none">
       <div className="flex min-w-0 flex-1 flex-col px-6 py-6">
-        <h1 className="mb-1 text-xl font-semibold text-slate-100">Knowledge Base</h1>
-        <p className="mb-4 text-sm text-slate-500">Everything ingested from Notion and Jira, and what it chunks into.</p>
+        <h1 className="mb-1 text-xl font-semibold text-ink-100">Knowledge Base</h1>
+        <p className="mb-4 text-sm text-ink-500">Everything ingested from Notion and Jira, and what it chunks into.</p>
+
+        <div className="mb-4 flex items-center gap-3 text-xs text-ink-500">
+          <StatTile label="Documents" value={total} />
+        </div>
 
         <div className="mb-4 flex gap-2">
           <input
@@ -41,7 +46,7 @@ export default function KnowledgeBasePage() {
               setSearch(e.target.value);
             }}
             placeholder="Search titles…"
-            className="w-64 rounded-md border border-slate-700 bg-slate-950 px-3 py-1.5 text-sm text-slate-100 placeholder:text-slate-600 focus:border-sky-600 focus:outline-none"
+            className="w-64 rounded-xl border border-ink-700 bg-ink-950 px-3 py-1.5 text-sm text-ink-100 placeholder:text-ink-600 focus:border-coral-500 focus:outline-none"
           />
           <select
             value={source}
@@ -49,7 +54,7 @@ export default function KnowledgeBasePage() {
               setOffset(0);
               setSource(e.target.value);
             }}
-            className="rounded-md border border-slate-700 bg-slate-950 px-3 py-1.5 text-sm text-slate-100 focus:border-sky-600 focus:outline-none"
+            className="rounded-xl border border-ink-700 bg-ink-950 px-3 py-1.5 text-sm text-ink-100 focus:border-coral-500 focus:outline-none"
           >
             <option value="">All sources</option>
             <option value="notion">Notion</option>
@@ -57,11 +62,11 @@ export default function KnowledgeBasePage() {
           </select>
         </div>
 
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto rounded-2xl border border-ink-800 bg-ink-900/40 p-2 shadow-panel">
           <DocumentTable documents={documents} selectedId={selectedId} onSelect={setSelectedId} />
         </div>
 
-        <div className="mt-3 flex items-center justify-between text-xs text-slate-500">
+        <div className="mt-3 flex items-center justify-between text-xs text-ink-500">
           <span>
             {total === 0 ? "0" : `${offset + 1}–${Math.min(offset + PAGE_SIZE, total)}`} of {total}
           </span>
@@ -70,7 +75,7 @@ export default function KnowledgeBasePage() {
               type="button"
               disabled={offset === 0}
               onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
-              className="rounded border border-slate-700 px-2 py-1 disabled:opacity-40"
+              className="rounded-full border border-ink-700 px-3 py-1 transition hover:border-ink-600 disabled:opacity-40"
             >
               Prev
             </button>
@@ -78,7 +83,7 @@ export default function KnowledgeBasePage() {
               type="button"
               disabled={offset + PAGE_SIZE >= total}
               onClick={() => setOffset(offset + PAGE_SIZE)}
-              className="rounded border border-slate-700 px-2 py-1 disabled:opacity-40"
+              className="rounded-full border border-ink-700 px-3 py-1 transition hover:border-ink-600 disabled:opacity-40"
             >
               Next
             </button>

@@ -14,7 +14,13 @@ interface AuthState {
 
 const AuthContext = createContext<AuthState | null>(null);
 
-const PUBLIC_PATHS = new Set(["/login", "/signup"]);
+// "/" is public too (it renders a marketing landing page for logged-out
+// visitors — see app/page.tsx — instead of redirecting them away), but unlike
+// /login and /signup it must NOT redirect an already-logged-in visitor
+// elsewhere: "/" is also the chat dashboard once authenticated, so a logged-in
+// user staying there is correct, not something to bounce away from.
+const PUBLIC_PATHS = new Set(["/", "/login", "/signup"]);
+const AUTH_ONLY_PATHS = new Set(["/login", "/signup"]);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<MeResponse | null>(null);
@@ -42,7 +48,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (loading) return;
     const isPublic = PUBLIC_PATHS.has(pathname);
     if (!user && !isPublic) router.replace("/login");
-    if (user && isPublic) router.replace("/");
+    if (user && AUTH_ONLY_PATHS.has(pathname)) router.replace("/");
   }, [loading, user, pathname, router]);
 
   async function logout() {

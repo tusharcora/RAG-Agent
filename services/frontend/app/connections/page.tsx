@@ -40,11 +40,11 @@ function ConnectionsPageContent() {
 
   return (
     <div className="mx-auto max-w-3xl px-6 py-8">
-      <h1 className="mb-1 text-xl font-semibold text-slate-100">Connections</h1>
-      <p className="mb-6 text-sm text-slate-500">Connect Notion and Jira, then sync content for retrieval.</p>
+      <h1 className="mb-1 text-xl font-semibold text-ink-100">Connections</h1>
+      <p className="mb-6 text-sm text-ink-500">Connect Notion and Jira, then sync content for retrieval.</p>
 
       {justConnected && (
-        <div className="mb-6 rounded-md border border-green-900/50 bg-green-950/30 px-3 py-2 text-sm text-green-300">
+        <div className="mb-6 rounded-xl border border-emerald-900/50 bg-emerald-950/30 px-3 py-2 text-sm text-emerald-300">
           {justConnected === "notion" ? "Notion" : "Jira"} connected successfully.
         </div>
       )}

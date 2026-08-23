@@ -3,7 +3,7 @@
 @tailwind utilities;
 
 body {
-  @apply bg-slate-950 text-slate-100 antialiased;
+  @apply bg-ink-950 text-ink-100 antialiased;
 }
 
 ::-webkit-scrollbar {
@@ -11,7 +11,7 @@ body {
   height: 8px;
 }
 ::-webkit-scrollbar-thumb {
-  @apply rounded-full bg-slate-700;
+  @apply rounded-full bg-ink-700;
 }
 ::-webkit-scrollbar-track {
   @apply bg-transparent;

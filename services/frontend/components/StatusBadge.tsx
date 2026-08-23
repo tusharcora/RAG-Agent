@@ -1,9 +1,9 @@
 const STYLES: Record<string, string> = {
-  received: "bg-slate-500/15 text-slate-300 ring-slate-500/30",
-  processing: "bg-sky-500/15 text-sky-300 ring-sky-500/30",
-  succeeded: "bg-green-500/15 text-green-300 ring-green-500/30",
-  failed: "bg-orange-500/15 text-orange-300 ring-orange-500/30",
-  dead_lettered: "bg-red-500/15 text-red-300 ring-red-500/30",
+  received: "bg-ink-700/40 text-ink-300 ring-ink-600/40",
+  processing: "bg-gold-400/15 text-gold-300 ring-gold-400/30",
+  succeeded: "bg-emerald-500/15 text-emerald-300 ring-emerald-500/30",
+  failed: "bg-coral-500/15 text-coral-300 ring-coral-500/30",
+  dead_lettered: "bg-coral-700/25 text-coral-200 ring-coral-600/40",
 };
 
 export function StatusBadge({ status }: { status: string }) {

@@ -36,13 +36,15 @@ export function ConnectionCard({ status, onSynced }: { status: ConnectionStatus;
   };
 
   return (
-    <div className="rounded-lg border border-slate-800 bg-slate-900/40 p-5">
-      <div className="mb-4 flex items-center gap-2">
-        <SourceIcon source={status.provider} className="h-5 w-5 text-slate-300" />
-        <h2 className="text-base font-semibold text-slate-100">{LABELS[status.provider] ?? status.provider}</h2>
+    <div className="rounded-2xl border border-ink-800 bg-ink-900/60 p-5 shadow-panel transition hover:border-ink-700">
+      <div className="mb-4 flex items-center gap-2.5">
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-ink-800 text-ink-200">
+          <SourceIcon source={status.provider} className="h-4.5 w-4.5" />
+        </span>
+        <h2 className="text-base font-semibold text-ink-100">{LABELS[status.provider] ?? status.provider}</h2>
         <span
           className={`ml-auto rounded-full px-2 py-0.5 text-xs font-medium ${
-            status.connected ? "bg-green-500/15 text-green-300" : "bg-slate-700/50 text-slate-400"
+            status.connected ? "bg-emerald-500/15 text-emerald-300" : "bg-ink-700/50 text-ink-400"
           }`}
         >
           {status.connected ? "Connected" : "Not connected"}
@@ -50,13 +52,13 @@ export function ConnectionCard({ status, onSynced }: { status: ConnectionStatus;
       </div>
 
       {status.connected ? (
-        <div className="space-y-1 text-sm">
+        <div className="space-y-1.5 text-sm">
           <Row label="Workspace" value={status.workspace_name ?? "—"} />
           <Row label="Last synced" value={formatTimestamp(status.last_synced_at)} />
           <Row label="Visibility" value={status.visibility_mode === "restricted" ? "Restricted" : "Org-wide"} />
         </div>
       ) : (
-        <p className="text-sm text-slate-500">Connect to start syncing content for retrieval.</p>
+        <p className="text-sm text-ink-500">Connect to start syncing content for retrieval.</p>
       )}
 
       <div className="mt-4 flex flex-wrap items-center gap-2">
@@ -65,20 +67,20 @@ export function ConnectionCard({ status, onSynced }: { status: ConnectionStatus;
             type="button"
             onClick={handleSync}
             disabled={syncing}
-            className="rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-sky-500 disabled:opacity-50"
+            className="rounded-full bg-coral-500 px-3.5 py-1.5 text-sm font-medium text-white transition hover:bg-coral-400 disabled:opacity-50"
           >
             {syncing ? "Syncing…" : "Sync now"}
           </button>
         ) : (
           <a
             href={`${API_BASE}/oauth/${status.provider}/authorize`}
-            className="inline-block rounded-md bg-slate-100 px-3 py-1.5 text-sm font-medium text-slate-900 transition hover:bg-white"
+            className="inline-block rounded-full bg-gradient-to-r from-coral-500 to-gold-400 px-3.5 py-1.5 text-sm font-medium text-ink-950 transition hover:brightness-110"
           >
             Connect
           </a>
         )}
       </div>
-      {syncResult && <p className="mt-2 text-xs text-slate-500">{syncResult}</p>}
+      {syncResult && <p className="mt-2 text-xs text-ink-500">{syncResult}</p>}
 
       {status.connected && isAdmin && status.id && <AccessControl connectionId={status.id} status={status} />}
     </div>
@@ -131,23 +133,25 @@ function AccessControl({ connectionId, status }: { connectionId: string; status:
   }
 
   return (
-    <div className="mt-4 border-t border-slate-800 pt-4">
+    <div className="mt-4 border-t border-ink-800 pt-4">
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
-        className="text-xs font-medium text-slate-400 hover:text-slate-200"
+        className="text-xs font-medium text-ink-400 transition hover:text-coral-300"
       >
         {expanded ? "Hide access settings" : "Manage access"}
       </button>
 
       {expanded && (
         <div className="mt-3 space-y-3">
-          <div className="flex gap-2 text-xs">
+          <div className="inline-flex rounded-full border border-ink-700 bg-ink-950/60 p-0.5 text-xs">
             <button
               type="button"
               disabled={saving}
               onClick={() => handleModeChange("org_wide")}
-              className={`rounded-md px-2 py-1 ${mode === "org_wide" ? "bg-sky-600 text-white" : "bg-slate-800 text-slate-400"}`}
+              className={`rounded-full px-2.5 py-1 transition ${
+                mode === "org_wide" ? "bg-coral-500 text-white" : "text-ink-400 hover:text-ink-200"
+              }`}
             >
               Org-wide
             </button>
@@ -155,7 +159,9 @@ function AccessControl({ connectionId, status }: { connectionId: string; status:
               type="button"
               disabled={saving}
               onClick={() => handleModeChange("restricted")}
-              className={`rounded-md px-2 py-1 ${mode === "restricted" ? "bg-sky-600 text-white" : "bg-slate-800 text-slate-400"}`}
+              className={`rounded-full px-2.5 py-1 transition ${
+                mode === "restricted" ? "bg-coral-500 text-white" : "text-ink-400 hover:text-ink-200"
+              }`}
             >
               Restricted
             </button>
@@ -163,20 +169,25 @@ function AccessControl({ connectionId, status }: { connectionId: string; status:
 
           {mode === "restricted" && (
             <div className="space-y-2">
-              <div className="max-h-40 space-y-1 overflow-y-auto rounded-md border border-slate-800 p-2">
+              <div className="max-h-40 space-y-1 overflow-y-auto rounded-xl border border-ink-800 p-2">
                 {members.map((m) => (
-                  <label key={m.user_id} className="flex items-center gap-2 text-xs text-slate-300">
-                    <input type="checkbox" checked={selected.has(m.user_id)} onChange={() => toggleMember(m.user_id)} />
+                  <label key={m.user_id} className="flex items-center gap-2 text-xs text-ink-300">
+                    <input
+                      type="checkbox"
+                      checked={selected.has(m.user_id)}
+                      onChange={() => toggleMember(m.user_id)}
+                      className="accent-coral-500"
+                    />
                     {m.display_name || m.email}
                   </label>
                 ))}
-                {members.length === 0 && <p className="text-xs text-slate-600">No org members found.</p>}
+                {members.length === 0 && <p className="text-xs text-ink-600">No org members found.</p>}
               </div>
               <button
                 type="button"
                 onClick={saveMembers}
                 disabled={saving}
-                className="rounded-md bg-slate-700 px-2 py-1 text-xs font-medium text-slate-100 hover:bg-slate-600 disabled:opacity-50"
+                className="rounded-full bg-ink-700 px-2.5 py-1 text-xs font-medium text-ink-100 transition hover:bg-ink-600 disabled:opacity-50"
               >
                 Save access list
               </button>
@@ -191,8 +202,8 @@ function AccessControl({ connectionId, status }: { connectionId: string; status:
 function Row({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex justify-between gap-4">
-      <span className="text-slate-500">{label}</span>
-      <span className="truncate text-slate-300">{value}</span>
+      <span className="text-ink-500">{label}</span>
+      <span className="truncate text-ink-300">{value}</span>
     </div>
   );
 }
