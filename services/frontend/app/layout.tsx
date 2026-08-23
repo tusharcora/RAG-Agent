@@ -12,7 +12,11 @@ export const metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={inter.variable}>
+    // dark-mode is a real class Untitled UI's theme.css keys its dark-palette
+    // overrides off (see styles/theme.css's ".dark-mode" block) — this app has
+    // no light-mode toggle, so it's forced on unconditionally here rather than
+    // wired to a theme switcher that doesn't exist.
+    <html lang="en" className={`${inter.variable} dark-mode`}>
       <body className="font-sans">
         <AuthProvider>
           <Nav />

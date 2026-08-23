@@ -1,6 +1,11 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+@import "../styles/theme.css";
+@import "../styles/typography.css";
+@import "../styles/brand.css";
+
+@plugin "@tailwindcss/typography";
+@plugin "tailwindcss-react-aria-components";
+@plugin "tailwindcss-animate";
 
 body {
   @apply bg-ink-950 text-ink-100 antialiased;
