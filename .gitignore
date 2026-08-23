@@ -6,3 +6,4 @@ node_modules/
 .next/
 *.log
 .DS_Store
+.claude/worktrees/

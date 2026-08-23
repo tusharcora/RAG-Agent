@@ -73,7 +73,7 @@ The first (and currently only) project built on this backbone. Four pieces:
 ## End-to-end workflow
 
 1. Fill in `.env` with real credentials (see [Getting API credentials](#getting-api-credentials) below), then `docker compose up --build`.
-2. Open the dashboard at `http://localhost:3000` → **Sign up** (creates your organization and logs you in as its owner) → **Connections** → click **Connect** under Notion or Jira → complete the provider's OAuth consent screen → you're redirected back with a success banner.
+2. Open the dashboard at `http://localhost:3000` → **Sign up** (email+password, or **Continue with Google/GitHub** if those are configured — both create your organization and log you in as its owner) → **Connections** → click **Connect** under Notion or Jira → complete the provider's OAuth consent screen → you're redirected back with a success banner.
 3. Click **Sync now**. This enumerates content and publishes one event per page/issue — check **Activity** to watch each one move from `received` to `succeeded` in near-real-time as the worker processes them.
 4. Check **Knowledge Base** — every synced document now has a title, source, last-synced time, and chunk count. Click one to see exactly what got chunked and embedded.
 5. Go to **Chat** and ask a question about the synced content. The answer streams token-by-token with `[n]` citation markers; the Sources panel on the right shows which retrieved chunks were cited and which were retrieved but not used — proof retrieval actually ran even when the model didn't cite everything.
@@ -96,6 +96,8 @@ The first (and currently only) project built on this backbone. Four pieces:
 | `GOOGLE_API_KEY` | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
 | `NOTION_CLIENT_ID` / `NOTION_CLIENT_SECRET` | [notion.so/my-integrations](https://www.notion.so/my-integrations) → New integration → enable **public** distribution (required for the OAuth flow) → set the redirect URI to `http://localhost:8000/oauth/notion/callback` |
 | `JIRA_CLIENT_ID` / `JIRA_CLIENT_SECRET` | [developer.atlassian.com/console/myapps](https://developer.atlassian.com/console/myapps/) → Create app → add the **OAuth 2.0 (3LO)** feature → callback URL `http://localhost:8000/oauth/jira/callback` → scopes `read:jira-work`, `read:jira-user`, `offline_access` |
+| `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` | [console.cloud.google.com/apis/credentials](https://console.cloud.google.com/apis/credentials) → Create OAuth client ID (Web application) → authorized redirect URI `http://localhost:8000/auth/google/callback`. **Not** `GOOGLE_API_KEY` above — that's the unrelated Gemini key. |
+| `GITHUB_OAUTH_CLIENT_ID` / `GITHUB_OAUTH_CLIENT_SECRET` | [github.com/settings/developers](https://github.com/settings/developers) → New OAuth App → callback URL `http://localhost:8000/auth/github/callback`. **Not** `GITHUB_APP_ID` below — that's the unrelated, not-yet-built code review bot's GitHub App. |
 
 ## Running locally
 

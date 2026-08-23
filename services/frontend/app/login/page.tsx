@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { login } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
+import { SocialLoginButtons } from "@/components/auth/SocialLoginButtons";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
@@ -55,7 +56,7 @@ export default function LoginPage() {
           or continue with
           <span className="h-px flex-1 bg-ink-800" />
         </div>
-        <div id="social-login-slot" className="flex flex-col gap-2" />
+        <SocialLoginButtons />
 
         <p className="mt-6 text-center text-sm text-ink-500">
           No account?{" "}

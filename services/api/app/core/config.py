@@ -63,5 +63,17 @@ class Settings(BaseSettings):
         if not self.jwt_secret and self.environment != "local":
             raise RuntimeError("JWT_SECRET must be set outside local development")
 
+    # --- Social login (user auth into the app itself, via Google/GitHub —
+    # distinct from the Notion/Jira OAuth above, which connects external data
+    # sources to an org rather than authenticating a user). Deliberately
+    # separate from `google_api_key` above, which is an unrelated Gemini key.
+    google_oauth_client_id: str = ""
+    google_oauth_client_secret: str = ""
+    google_oauth_redirect_uri: str = "http://localhost:8000/auth/google/callback"
+
+    github_oauth_client_id: str = ""
+    github_oauth_client_secret: str = ""
+    github_oauth_redirect_uri: str = "http://localhost:8000/auth/github/callback"
+
 
 settings = Settings()

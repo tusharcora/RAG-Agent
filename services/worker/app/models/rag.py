@@ -36,10 +36,31 @@ class User(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
     email: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
-    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    # Nullable: a social-only account (Google/GitHub, see OAuthIdentity) never
+    # sets one. infra/postgres/004_social_login.sql drops the NOT NULL.
+    password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
     display_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+
+
+class OAuthIdentity(Base):
+    """Mirrors infra/postgres/004_social_login.sql. A linked Google/GitHub
+    login identity for a user — distinct from OAuthConnection, which is a
+    Notion/Jira *data source* connected to an org, not a login mechanism."""
+
+    __tablename__ = "oauth_identities"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    provider: Mapped[str] = mapped_column(Text, nullable=False)  # 'google' | 'github'
+    provider_user_id: Mapped[str] = mapped_column(Text, nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    email: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+
+    __table_args__ = (UniqueConstraint("provider", "provider_user_id"),)
 
 
 class OrgMember(Base):

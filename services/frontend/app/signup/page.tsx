@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { signup } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
+import { SocialLoginButtons } from "@/components/auth/SocialLoginButtons";
 
 export default function SignupPage() {
   return (
@@ -81,7 +82,7 @@ function SignupForm() {
           or continue with
           <span className="h-px flex-1 bg-ink-800" />
         </div>
-        <div id="social-login-slot" className="flex flex-col gap-2" />
+        <SocialLoginButtons inviteToken={inviteToken || undefined} />
 
         <p className="mt-6 text-center text-sm text-ink-500">
           Already have an account?{" "}
