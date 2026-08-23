@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import require_api_key
+from app.core.auth import AuthContext, require_auth
 from app.core.db import get_session
 from app.core.queue import publish_event
 from app.models.event_log import EventLog
@@ -46,14 +46,17 @@ class EventLogOut(BaseModel):
     updated_at: datetime
 
 
-@router.get("/recent", dependencies=[Depends(require_api_key)])
+@router.get("/recent")
 async def recent_events(
     limit: int = Query(50, le=200),
     status: str | None = None,
     routing_key: str | None = None,
+    auth: AuthContext = Depends(require_auth),
     session: AsyncSession = Depends(get_session),
 ) -> list[EventLogOut]:
-    stmt = select(EventLog).order_by(EventLog.created_at.desc()).limit(limit)
+    stmt = (
+        select(EventLog).where(EventLog.org_id == auth.org_id).order_by(EventLog.created_at.desc()).limit(limit)
+    )
     if status:
         stmt = stmt.where(EventLog.status == status)
     if routing_key:

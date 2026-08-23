@@ -58,7 +58,7 @@ Only the event source and the worker's task logic differ between projects.
 
 The first (and currently only) project built on this backbone. Four pieces:
 
-- **Connect** — OAuth to Notion and/or Jira (`/oauth/{provider}/authorize`). Single-tenant: one active connection per provider.
+- **Connect** — OAuth to Notion and/or Jira (`/oauth/{provider}/authorize`), scoped to your organization: one active connection per provider per org.
 - **Sync** — a manual "sync now" trigger (`/sync/notion`, `/sync/jira`) enumerates content and publishes one event per page/issue onto the queue. Notion has no content-change webhooks, so both providers use polling-on-demand to stay symmetric.
 - **Ingest** — the worker fetches each page/issue, chunks it (paragraph-aware, heading/comment-aware), embeds each chunk via Voyage AI, and upserts it into `pgvector`. Unchanged content is skipped on re-sync (content-hash check) rather than re-embedded.
 - **Query** — the chat screen streams a grounded answer: embed the question → cosine-similarity search over chunks → stream the answer from Gemini with inline `[n]` citations → resolve which retrieved sources were actually cited vs. just searched.
@@ -73,7 +73,7 @@ The first (and currently only) project built on this backbone. Four pieces:
 ## End-to-end workflow
 
 1. Fill in `.env` with real credentials (see [Getting API credentials](#getting-api-credentials) below), then `docker compose up --build`.
-2. Open the dashboard at `http://localhost:3000` → **Connections** → click **Connect** under Notion or Jira → complete the provider's OAuth consent screen → you're redirected back with a success banner.
+2. Open the dashboard at `http://localhost:3000` → **Sign up** (creates your organization and logs you in as its owner) → **Connections** → click **Connect** under Notion or Jira → complete the provider's OAuth consent screen → you're redirected back with a success banner.
 3. Click **Sync now**. This enumerates content and publishes one event per page/issue — check **Activity** to watch each one move from `received` to `succeeded` in near-real-time as the worker processes them.
 4. Check **Knowledge Base** — every synced document now has a title, source, last-synced time, and chunk count. Click one to see exactly what got chunked and embedded.
 5. Go to **Chat** and ask a question about the synced content. The answer streams token-by-token with `[n]` citation markers; the Sources panel on the right shows which retrieved chunks were cited and which were retrieved but not used — proof retrieval actually ran even when the model didn't cite everything.
@@ -126,8 +126,9 @@ No automated test suite exists yet — verification is manual, via the dashboard
 
 ## Known limitations (deliberate, not oversights)
 
-- OAuth tokens are stored in plaintext in Postgres — fine for local/single-tenant use, not for anything multi-tenant or production.
-- No auth on the API by default (`API_SHARED_SECRET` is opt-in, empty = disabled) — set it before exposing this anywhere off localhost.
+- OAuth tokens are stored in plaintext in Postgres — fine for local use, not for production.
+- The app is multi-tenant (organizations + JWT-based login, `POST /auth/signup`/`/auth/login`), but in-org access control is connection-level, not per-document — an org admin can mark a whole Notion/Jira connection "restricted" and pick which members see it, but can't restrict individual pages/issues. Notion's public API has no per-page ACL endpoint at all, and Jira's real per-issue permissions need OAuth scopes most integrations won't get, so neither is mirrored.
+- JWT sessions can't be revoked — `POST /auth/logout` only clears the client-side cookie; a stolen token stays valid for its 24h life.
 - No Jira webhook receiver yet — both providers use manual "sync now" polling to stay symmetric (Notion has no webhook option regardless).
 - Trace IDs in `event_log` reflect the API's publish-time trace only — there's no W3C trace-context propagation across the RabbitMQ header yet, so it doesn't (yet) connect to the worker's own processing trace in Grafana.
 - Revisiting a past chat session replays the text only — per-turn sources/citations aren't persisted for historical turns, only the currently-streaming one (Redis short-term memory by design, not a new database table).

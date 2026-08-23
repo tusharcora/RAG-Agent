@@ -8,26 +8,21 @@ from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types as genai_types
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
-from app.core.auth import require_api_key
+from app.core.auth import AuthContext, require_auth
 from app.core.config import settings
 from app.core.db import get_session
-from app.core.ratelimit import rate_limiter
+from app.core.ratelimit import rate_limiter_per_user
 from app.core.session_store import append_history, load_history
 from app.integrations.voyage import embed_texts
-from app.models.rag import Chunk, Document
+from app.models.rag import Chunk, ConnectionMember, Document, OAuthConnection
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(
-    dependencies=[
-        Depends(require_api_key),
-        Depends(rate_limiter("query", settings.rate_limit_query_per_minute)),
-    ]
-)
+router = APIRouter(dependencies=[Depends(rate_limiter_per_user("query", settings.rate_limit_query_per_minute))])
 
 _genai_client = genai.Client(api_key=settings.google_api_key)
 
@@ -92,7 +87,11 @@ async def _open_gemini_stream(contents: list[genai_types.Content]):
 
 
 @router.post("")
-async def query(request: QueryRequest, session: AsyncSession = Depends(get_session)) -> StreamingResponse:
+async def query(
+    request: QueryRequest,
+    auth: AuthContext = Depends(require_auth),
+    session: AsyncSession = Depends(get_session),
+) -> StreamingResponse:
     session_id = request.session_id or str(uuid.uuid4())
     top_k = request.top_k or settings.query_top_k
 
@@ -101,14 +100,38 @@ async def query(request: QueryRequest, session: AsyncSession = Depends(get_sessi
     stmt = (
         select(Chunk.content, Document.title, Document.url, Document.source)
         .join(Document, Document.id == Chunk.document_id)
-        .where(Chunk.embedding.is_not(None))
-        .order_by(Chunk.embedding.cosine_distance(question_embedding))
-        .limit(top_k)
+        .join(OAuthConnection, OAuthConnection.id == Document.connection_id)
+        .where(
+            Chunk.embedding.is_not(None),
+            OAuthConnection.org_id == auth.org_id,
+        )
     )
+    if auth.role not in ("owner", "admin"):
+        # Plain members see org-wide connections plus any connection they're
+        # explicitly on the allow-list for. This filter runs before ORDER BY
+        # ... LIMIT below (not as a post-fetch step) so a restricted member
+        # gets the true top-k among *visible* chunks, not an unfiltered top-k
+        # truncated afterward.
+        stmt = stmt.where(
+            or_(
+                OAuthConnection.visibility_mode == "org_wide",
+                OAuthConnection.id.in_(
+                    select(ConnectionMember.connection_id).where(ConnectionMember.user_id == auth.user_id)
+                ),
+            )
+        )
+    stmt = stmt.order_by(Chunk.embedding.cosine_distance(question_embedding)).limit(top_k)
+
     result = await session.execute(stmt)
     rows = result.mappings().all()
+    if len(rows) < top_k:
+        # pgvector's HNSW index does an approximate walk; a highly selective
+        # permission filter can return fewer than top_k post-filter rows.
+        # Not fixed in v1 (small expected per-org corpus) — logged so
+        # degraded recall is visible rather than silently confident.
+        logger.info("Retrieved %d/%d rows for org=%s (permission filter may have reduced recall)", len(rows), top_k, auth.org_id)
 
-    history = await load_history(session_id) if request.session_id else []
+    history = await load_history(auth.org_id, auth.user_id, session_id) if request.session_id else []
 
     async def event_stream():
         sources = [
@@ -151,8 +174,8 @@ async def query(request: QueryRequest, session: AsyncSession = Depends(get_sessi
 
         cited_indices = [i + 1 for i in range(len(rows)) if f"[{i + 1}]" in full_answer]
 
-        await append_history(session_id, "user", request.question)
-        await append_history(session_id, "assistant", full_answer)
+        await append_history(auth.org_id, auth.user_id, session_id, "user", request.question)
+        await append_history(auth.org_id, auth.user_id, session_id, "assistant", full_answer)
 
         yield _sse("done", {"session_id": session_id, "cited_indices": cited_indices, "answer": full_answer})
 

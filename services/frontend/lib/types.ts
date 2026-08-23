@@ -26,11 +26,28 @@ export interface SessionDetail {
 }
 
 export interface ConnectionStatus {
+  id: string | null;
   provider: string;
   connected: boolean;
   workspace_name: string | null;
   site_url: string | null;
   last_synced_at: string | null;
+  visibility_mode: "org_wide" | "restricted" | null;
+}
+
+export interface MeResponse {
+  user_id: string;
+  org_id: string;
+  role: "owner" | "admin" | "member";
+  email: string;
+  display_name: string | null;
+}
+
+export interface OrgMember {
+  user_id: string;
+  email: string;
+  display_name: string | null;
+  role: "owner" | "admin" | "member";
 }
 
 export interface DocumentSummary {

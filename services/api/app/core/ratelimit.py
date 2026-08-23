@@ -1,7 +1,8 @@
 import time
 
-from fastapi import HTTPException, Request
+from fastapi import Depends, HTTPException, Request
 
+from app.core.auth import AuthContext, require_auth
 from app.core.redis import get_redis
 
 
@@ -30,5 +31,19 @@ def rate_limiter(route: str, per_minute: int):
     async def _check(request: Request) -> None:
         client_ip = request.client.host if request.client else "unknown"
         await check_rate_limit(f"{route}:{client_ip}", per_minute)
+
+    return _check
+
+
+def rate_limiter_per_user(route: str, per_minute: int):
+    """Like rate_limiter() but keyed by authenticated user id, not IP.
+
+    Per-IP is both too coarse (a shared office NAT shares one budget across
+    many legitimate users) and trivially evaded (rotate IP, same account) for
+    endpoints that now have real identity behind them — use this for any
+    route sitting behind require_auth instead of the IP-based limiter."""
+
+    async def _check(auth: AuthContext = Depends(require_auth)) -> None:
+        await check_rate_limit(f"{route}:user:{auth.user_id}", per_minute)
 
     return _check

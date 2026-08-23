@@ -1,4 +1,4 @@
-import { API_BASE, API_KEY_HEADER } from "./api";
+import { API_BASE } from "./api";
 import type { Source } from "./types";
 
 interface StreamCallbacks {
@@ -15,7 +15,6 @@ interface StreamCallbacks {
  */
 export async function streamQuery(question: string, sessionId: string | null, cb: StreamCallbacks): Promise<void> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (API_KEY_HEADER) headers["X-API-Key"] = API_KEY_HEADER;
 
   let res: Response;
   try {
@@ -23,6 +22,7 @@ export async function streamQuery(question: string, sessionId: string | null, cb
       method: "POST",
       headers,
       body: JSON.stringify({ question, session_id: sessionId }),
+      credentials: "include",
     });
   } catch (err) {
     cb.onError(err instanceof Error ? err.message : "Network error reaching the API");

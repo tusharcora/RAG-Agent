@@ -107,8 +107,6 @@ services:
     restart: unless-stopped
     environment:
       NEXT_PUBLIC_API_URL: http://localhost:8000
-      # Stays in sync if API_SHARED_SECRET is turned on — empty by default (disabled).
-      NEXT_PUBLIC_API_KEY: ${API_SHARED_SECRET:-}
     ports:
       - "3000:3000"
     depends_on:

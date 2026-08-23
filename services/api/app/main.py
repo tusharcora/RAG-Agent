@@ -7,7 +7,7 @@ from app.core.config import settings
 from app.core.telemetry import instrument_app, setup_telemetry
 from app.core.queue import get_queue_connection, close_queue_connection
 from app.core.db import init_engine, dispose_engine
-from app.api.routes import health, events, notion_oauth, jira_oauth, sync, query, sessions, connections, documents, auth
+from app.api.routes import health, events, notion_oauth, jira_oauth, sync, query, sessions, connections, documents, auth, org
 
 
 @asynccontextmanager
@@ -48,6 +48,7 @@ app.include_router(query.router, prefix="/query", tags=["rag-agent"])
 app.include_router(sessions.router, prefix="/sessions", tags=["rag-agent"])
 app.include_router(connections.router, prefix="/connections", tags=["rag-agent"])
 app.include_router(documents.router, prefix="/documents", tags=["rag-agent"])
+app.include_router(org.router, prefix="/org", tags=["auth"])
 
 # Code review bot routers get mounted here once that project starts, e.g.:
 # from app.api.routes import github_webhook
