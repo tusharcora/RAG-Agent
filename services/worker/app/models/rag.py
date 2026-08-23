@@ -19,15 +19,107 @@ class Base(DeclarativeBase):
 RagSourceType = PG_ENUM("notion", "jira", name="rag_source", create_type=False)
 
 
+class Organization(Base):
+    """Mirrors infra/postgres/003_orgs_and_access.sql."""
+
+    __tablename__ = "organizations"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    slug: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    email: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    display_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+
+
+class OrgMember(Base):
+    __tablename__ = "org_members"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    role: Mapped[str] = mapped_column(Text, nullable=False, server_default="member")  # owner | admin | member
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+
+    __table_args__ = (UniqueConstraint("org_id", "user_id"),)
+
+
+class OrgInvite(Base):
+    __tablename__ = "org_invites"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    email: Mapped[str] = mapped_column(Text, nullable=False)
+    role: Mapped[str] = mapped_column(Text, nullable=False, server_default="member")
+    token: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+    accepted_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+
+
+class ServiceToken(Base):
+    """Org-scoped machine credential for /sync automation — replaces the
+    legacy global API_SHARED_SECRET entirely."""
+
+    __tablename__ = "service_tokens"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    token_hash: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    label: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+    revoked_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+
+
+class ConnectionMember(Base):
+    """Allow-list used only when the connection's visibility_mode is 'restricted'."""
+
+    __tablename__ = "connection_members"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    connection_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("oauth_connections.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+
+    __table_args__ = (UniqueConstraint("connection_id", "user_id"),)
+
+
 class OAuthConnection(Base):
-    """Mirrors infra/postgres/002_rag_schema.sql. Tables are created by that
-    SQL migration, not by Base.metadata.create_all — these models exist only
-    to give the api/worker services a typed way to read/write the same rows."""
+    """Mirrors infra/postgres/002_rag_schema.sql + 003_orgs_and_access.sql. Tables
+    are created by those SQL migrations, not by Base.metadata.create_all — these
+    models exist only to give the api/worker services a typed way to read/write
+    the same rows."""
 
     __tablename__ = "oauth_connections"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
-    provider: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    visibility_mode: Mapped[str] = mapped_column(Text, nullable=False, server_default="org_wide")
     workspace_id: Mapped[str] = mapped_column(Text, nullable=False)
     workspace_name: Mapped[str] = mapped_column(Text, nullable=False)
     site_url: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -37,6 +129,8 @@ class OAuthConnection(Base):
     bot_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+
+    __table_args__ = (UniqueConstraint("org_id", "provider"),)
 
 
 class Document(Base):
@@ -56,7 +150,10 @@ class Document(Base):
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
 
-    __table_args__ = (UniqueConstraint("source", "external_id"),)
+    # Scoped by connection_id rather than a separate org_id column: a connection
+    # belongs to exactly one org (oauth_connections.org_id), so this is equivalent
+    # org-scoping with one fewer column. See OAuthConnection above.
+    __table_args__ = (UniqueConstraint("connection_id", "source", "external_id"),)
 
 
 class Chunk(Base):
