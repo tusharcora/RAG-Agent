@@ -100,3 +100,10 @@ export interface EventLogEntry {
   created_at: string;
   updated_at: string;
 }
+
+export interface DlqEvent {
+  id: string;
+  routing_key: string;
+  error: string | null;
+  created_at: string;
+}

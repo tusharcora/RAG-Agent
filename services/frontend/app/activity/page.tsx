@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { getEvents } from "@/lib/api";
 import { useInterval } from "@/hooks/useInterval";
+import { useAuth } from "@/lib/auth-context";
 import { EventTable } from "@/components/activity/EventTable";
+import { DlqPanel } from "@/components/activity/DlqPanel";
 import { StatTile } from "@/components/StatTile";
 import { TableCard } from "@/components/application/table/table";
 import { NativeSelect } from "@/components/base/select/select-native";
@@ -15,6 +17,8 @@ const STATUS_OPTIONS = [{ label: "All statuses", value: "" }, ...STATUSES.map((s
 export default function ActivityPage() {
   const [events, setEvents] = useState<EventLogEntry[]>([]);
   const [status, setStatus] = useState("");
+  const { user } = useAuth();
+  const isAdmin = user?.role === "owner" || user?.role === "admin";
 
   const refresh = useCallback(() => {
     getEvents({ limit: 100, status: status || undefined })
@@ -61,6 +65,8 @@ export default function ActivityPage() {
           <EventTable events={events} />
         </div>
       </TableCard.Root>
+
+      {isAdmin && <DlqPanel />}
     </div>
   );
 }
