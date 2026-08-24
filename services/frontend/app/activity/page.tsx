@@ -5,9 +5,12 @@ import { getEvents } from "@/lib/api";
 import { useInterval } from "@/hooks/useInterval";
 import { EventTable } from "@/components/activity/EventTable";
 import { StatTile } from "@/components/StatTile";
+import { TableCard } from "@/components/application/table/table";
+import { NativeSelect } from "@/components/base/select/select-native";
 import type { EventLogEntry } from "@/lib/types";
 
 const STATUSES = ["received", "processing", "succeeded", "failed", "dead_lettered"];
+const STATUS_OPTIONS = [{ label: "All statuses", value: "" }, ...STATUSES.map((s) => ({ label: s, value: s }))];
 
 export default function ActivityPage() {
   const [events, setEvents] = useState<EventLogEntry[]>([]);
@@ -32,18 +35,6 @@ export default function ActivityPage() {
           <h1 className="mb-1 text-xl font-semibold text-ink-100">Activity</h1>
           <p className="text-sm text-ink-500">Live feed of sync/embed events from the shared event_log table.</p>
         </div>
-        <select
-          value={status}
-          onChange={(e) => setStatus(e.target.value)}
-          className="rounded-xl border border-ink-700 bg-ink-950 px-3 py-1.5 text-sm text-ink-100 focus:border-coral-500 focus:outline-none"
-        >
-          <option value="">All statuses</option>
-          {STATUSES.map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
-          ))}
-        </select>
       </div>
 
       <div className="mb-4 flex flex-wrap gap-3">
@@ -52,9 +43,24 @@ export default function ActivityPage() {
         <StatTile label="failed / dead-lettered" value={failed} accent="coral" />
       </div>
 
-      <div className="overflow-x-auto rounded-2xl border border-ink-800 bg-ink-900/40 p-2 shadow-panel">
-        <EventTable events={events} />
-      </div>
+      <TableCard.Root>
+        <TableCard.Header
+          title="Events"
+          description="Sync and embed events, newest first."
+          contentTrailing={
+            <NativeSelect
+              size="sm"
+              options={STATUS_OPTIONS}
+              value={status}
+              onChange={(e) => setStatus(e.target.value)}
+              className="w-40"
+            />
+          }
+        />
+        <div className="overflow-x-auto">
+          <EventTable events={events} />
+        </div>
+      </TableCard.Root>
     </div>
   );
 }

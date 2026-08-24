@@ -1,7 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { X } from "@untitledui/icons";
 import { getDocument } from "@/lib/api";
+import { Button } from "@/components/base/buttons/button";
+import { Badge } from "@/components/base/badges/badges";
 import type { DocumentDetail } from "@/lib/types";
 
 export function DocumentDetailDrawer({ documentId, onClose }: { documentId: string; onClose: () => void }) {
@@ -22,14 +25,12 @@ export function DocumentDetailDrawer({ documentId, onClose }: { documentId: stri
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold text-ink-100">{detail?.title ?? "Loading…"}</p>
           {detail && (
-            <a href={detail.url} target="_blank" rel="noreferrer" className="text-xs text-coral-400 hover:underline">
+            <Button color="link-color" size="sm" href={detail.url} target="_blank" rel="noreferrer">
               View original
-            </a>
+            </Button>
           )}
         </div>
-        <button type="button" onClick={onClose} className="shrink-0 text-ink-500 hover:text-ink-300">
-          ✕
-        </button>
+        <Button color="tertiary" size="sm" iconLeading={X} onPress={onClose} className="shrink-0 rounded-full" />
       </div>
 
       {error && <p className="text-sm text-coral-400">Couldn't load this document.</p>}
@@ -42,13 +43,19 @@ export function DocumentDetailDrawer({ documentId, onClose }: { documentId: stri
           </p>
           {detail.chunks.map((chunk) => (
             <div key={chunk.id} className="rounded-xl border border-ink-800 bg-ink-950/60 p-3">
-              <div className="mb-2 flex flex-wrap items-center gap-1.5 text-xs text-ink-500">
-                <span className="rounded bg-ink-800 px-1.5 py-0.5 font-mono">#{chunk.chunk_index}</span>
-                {chunk.token_count != null && <span>{chunk.token_count} tok</span>}
+              <div className="mb-2 flex flex-wrap items-center gap-1.5">
+                <Badge type="color" color="gray" size="sm" className="font-mono">
+                  #{chunk.chunk_index}
+                </Badge>
+                {chunk.token_count != null && (
+                  <Badge type="color" color="gray" size="sm">
+                    {chunk.token_count} tok
+                  </Badge>
+                )}
                 {Object.entries(chunk.metadata).map(([key, value]) => (
-                  <span key={key} className="rounded bg-ink-800 px-1.5 py-0.5">
+                  <Badge key={key} type="color" color="gray" size="sm">
                     {key}: {Array.isArray(value) ? value.join(" › ") : String(value)}
-                  </span>
+                  </Badge>
                 ))}
               </div>
               <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap font-mono text-xs text-ink-300">

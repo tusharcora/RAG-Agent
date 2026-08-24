@@ -1,4 +1,5 @@
 import { StatusBadge } from "@/components/StatusBadge";
+import { Table } from "@/components/application/table/table";
 import type { EventLogEntry } from "@/lib/types";
 
 export function EventTable({ events }: { events: EventLogEntry[] }) {
@@ -7,32 +8,30 @@ export function EventTable({ events }: { events: EventLogEntry[] }) {
   }
 
   return (
-    <table className="w-full text-left text-sm">
-      <thead>
-        <tr className="border-b border-ink-800 text-xs uppercase tracking-wide text-ink-500">
-          <th className="py-2 pr-3 font-medium">Time</th>
-          <th className="py-2 pr-3 font-medium">Routing key</th>
-          <th className="py-2 pr-3 font-medium">Status</th>
-          <th className="py-2 pr-3 font-medium">Dedupe key</th>
-          <th className="py-2 pr-3 font-medium">Trace ID</th>
-          <th className="py-2 pr-3 font-medium">Error</th>
-        </tr>
-      </thead>
-      <tbody>
-        {events.map((e) => (
-          <tr key={e.id} className="border-b border-ink-900 transition hover:bg-ink-800/30">
-            <td className="whitespace-nowrap py-2.5 pr-3 text-ink-400">{new Date(e.created_at).toLocaleTimeString()}</td>
-            <td className="py-2.5 pr-3 font-mono text-xs text-ink-300">{e.routing_key}</td>
-            <td className="py-2.5 pr-3">
+    <Table aria-label="Activity feed" size="sm">
+      <Table.Header>
+        <Table.Head id="time" label="Time" isRowHeader />
+        <Table.Head id="routing_key" label="Routing key" />
+        <Table.Head id="status" label="Status" />
+        <Table.Head id="dedupe_key" label="Dedupe key" />
+        <Table.Head id="trace_id" label="Trace ID" />
+        <Table.Head id="error" label="Error" />
+      </Table.Header>
+      <Table.Body items={events}>
+        {(e) => (
+          <Table.Row id={e.id}>
+            <Table.Cell className="whitespace-nowrap">{new Date(e.created_at).toLocaleTimeString()}</Table.Cell>
+            <Table.Cell className="font-mono text-xs whitespace-nowrap">{e.routing_key}</Table.Cell>
+            <Table.Cell>
               <StatusBadge status={e.status} />
-            </td>
-            <td className="max-w-xs truncate py-2.5 pr-3 font-mono text-xs text-ink-500">{e.dedupe_key}</td>
-            <td className="py-2.5 pr-3">
+            </Table.Cell>
+            <Table.Cell className="max-w-xs truncate font-mono text-xs">{e.dedupe_key}</Table.Cell>
+            <Table.Cell>
               {e.trace_id ? (
                 <button
                   type="button"
                   onClick={() => navigator.clipboard?.writeText(e.trace_id ?? "")}
-                  className="font-mono text-xs text-ink-500 hover:text-ink-300"
+                  className="font-mono text-xs text-quaternary hover:text-tertiary"
                   title="Copy trace id"
                 >
                   {e.trace_id.slice(0, 10)}…
@@ -40,11 +39,11 @@ export function EventTable({ events }: { events: EventLogEntry[] }) {
               ) : (
                 <span className="text-xs text-ink-700">—</span>
               )}
-            </td>
-            <td className="max-w-xs truncate py-2.5 pr-3 text-xs text-coral-400">{e.error ?? ""}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+            </Table.Cell>
+            <Table.Cell className="max-w-xs truncate text-xs text-error-primary">{e.error ?? ""}</Table.Cell>
+          </Table.Row>
+        )}
+      </Table.Body>
+    </Table>
   );
 }

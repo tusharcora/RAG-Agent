@@ -1,5 +1,5 @@
-import Link from "next/link";
 import { SourceIcon } from "@/components/icons/SourceIcon";
+import { Button } from "@/components/base/buttons/button";
 
 const FEATURES = [
   {
@@ -58,18 +58,12 @@ export function LandingPage() {
           </p>
 
           <div className="mt-10 flex flex-wrap items-center justify-center gap-3 lg:justify-start">
-            <Link
-              href="/signup"
-              className="rounded-full bg-coral-500 px-6 py-2.5 text-sm font-semibold text-white shadow-glow transition hover:bg-coral-400"
-            >
+            <Button color="primary" size="xl" href="/signup" className="shadow-glow">
               Start free — no card required
-            </Link>
-            <Link
-              href="/login"
-              className="rounded-full border border-ink-700 bg-ink-900/60 px-6 py-2.5 text-sm font-semibold text-ink-200 transition hover:border-ink-600 hover:bg-ink-800/60"
-            >
+            </Button>
+            <Button color="secondary" size="xl" href="/login">
               Log in
-            </Link>
+            </Button>
           </div>
           <p className="mt-4 text-xs text-ink-600">Free for your whole team, forever. Takes about 2 minutes to connect.</p>
         </div>
@@ -105,12 +99,9 @@ export function LandingPage() {
             Create your organization, connect Notion or Jira, and ask your first question in under 2 minutes. Free —
             no card, no trial clock, ever.
           </p>
-          <Link
-            href="/signup"
-            className="inline-block rounded-full bg-coral-500 px-6 py-2.5 text-sm font-semibold text-white shadow-glow transition hover:bg-coral-400"
-          >
+          <Button color="primary" size="xl" href="/signup" className="shadow-glow">
             Create your organization
-          </Link>
+          </Button>
         </div>
       </section>
     </div>
