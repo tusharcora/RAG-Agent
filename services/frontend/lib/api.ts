@@ -8,6 +8,7 @@ import type {
   OrgMember,
   SessionDetail,
   SessionSummary,
+  VoyageUsage,
 } from "./types";
 
 export const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -106,6 +107,10 @@ export function setConnectionVisibility(connectionId: string, mode: "org_wide" |
 
 export function getConnectionPreview(connectionId: string) {
   return get<ConnectionPreview>(`/connections/${connectionId}/preview`);
+}
+
+export function getVoyageUsage() {
+  return get<VoyageUsage>("/usage/voyage");
 }
 
 export function getConnectionMembers(connectionId: string) {

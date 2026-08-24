@@ -56,6 +56,12 @@ export interface ConnectionPreview {
   truncated: boolean;
 }
 
+export interface VoyageUsage {
+  used: number;
+  budget: number;
+  percent: number;
+}
+
 export interface DocumentSummary {
   id: string;
   source: string;
