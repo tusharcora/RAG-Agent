@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
@@ -12,6 +12,7 @@ from app.core.auth import AuthContext, require_auth, require_role
 from app.core.config import settings
 from app.core.db import get_session
 from app.integrations.jira_auth import ensure_fresh_token
+from app.models.event_log import EventLog
 from app.models.rag import ConnectionMember, Document, OAuthConnection
 
 router = APIRouter(dependencies=[Depends(require_auth)])
@@ -27,6 +28,8 @@ class ConnectionStatus(BaseModel):
     site_url: str | None
     last_synced_at: datetime | None
     visibility_mode: str | None
+    dead_lettered_count_24h: int
+    last_sync_status: str | None  # most recent event_log row's status for this connection, or None if it has never synced
 
 
 @router.get("")
@@ -50,6 +53,8 @@ async def connections(
                     site_url=None,
                     last_synced_at=None,
                     visibility_mode=None,
+                    dead_lettered_count_24h=0,
+                    last_sync_status=None,
                 )
             )
             continue
@@ -62,6 +67,8 @@ async def connections(
         )
         last_synced_at = last_synced_result.scalar_one()
 
+        dead_lettered_count_24h, last_sync_status = await _sync_health(session, auth.org_id, conn.id)
+
         out.append(
             ConnectionStatus(
                 id=str(conn.id),
@@ -71,9 +78,42 @@ async def connections(
                 site_url=conn.site_url,
                 last_synced_at=last_synced_at,
                 visibility_mode=conn.visibility_mode,
+                dead_lettered_count_24h=dead_lettered_count_24h,
+                last_sync_status=last_sync_status,
             )
         )
     return out
+
+
+async def _sync_health(session: AsyncSession, org_id: uuid.UUID, connection_id: uuid.UUID) -> tuple[int, str | None]:
+    """Dead-letter count + most recent event status for one connection.
+
+    event_log has no connection_id column (it's shared across both projects,
+    and codereview.* events will never have one) — connection_id only lives
+    inside payload, so this reaches into the JSONB via ->>'connection_id'.
+    Both figures come out of a single round trip (two scalar subqueries in
+    one SELECT) rather than two separate queries, since this runs once per
+    connection on every /connections call (including the polled ones).
+    """
+    conn_filter = (
+        (EventLog.org_id == org_id)
+        & (EventLog.routing_key.like("rag.%"))
+        & (EventLog.payload["connection_id"].astext == str(connection_id))
+    )
+    since = datetime.now(timezone.utc) - timedelta(hours=24)
+
+    count_sq = (
+        select(func.count())
+        .where(conn_filter, EventLog.status == "dead_lettered", EventLog.created_at > since)
+        .scalar_subquery()
+    )
+    last_status_sq = (
+        select(EventLog.status).where(conn_filter).order_by(EventLog.created_at.desc()).limit(1).scalar_subquery()
+    )
+
+    result = await session.execute(select(count_sq, last_status_sq))
+    dead_lettered_count, last_status = result.one()
+    return dead_lettered_count, last_status
 
 
 async def _get_org_connection(session: AsyncSession, connection_id: uuid.UUID, org_id: uuid.UUID) -> OAuthConnection:
@@ -113,6 +153,10 @@ async def set_visibility(
         site_url=connection.site_url,
         last_synced_at=None,
         visibility_mode=connection.visibility_mode,
+        # Not recomputed here — the caller only wants confirmation the mode
+        # changed, and GET /connections (polled) will refresh these shortly.
+        dead_lettered_count_24h=0,
+        last_sync_status=None,
     )
 
 

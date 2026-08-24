@@ -34,6 +34,8 @@ export interface ConnectionStatus {
   site_url: string | null;
   last_synced_at: string | null;
   visibility_mode: "org_wide" | "restricted" | null;
+  dead_lettered_count_24h: number;
+  last_sync_status: "received" | "processing" | "succeeded" | "failed" | "dead_lettered" | null;
 }
 
 export interface MeResponse {
