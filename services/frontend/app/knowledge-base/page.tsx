@@ -108,7 +108,15 @@ export default function KnowledgeBasePage() {
         </TableCard.Root>
       </div>
 
-      {selectedId && <DocumentDetailDrawer documentId={selectedId} onClose={() => setSelectedId(null)} />}
+      {selectedId && (
+        <DocumentDetailDrawer
+          documentId={selectedId}
+          onClose={() => setSelectedId(null)}
+          onExcludedChange={(excluded) =>
+            setDocuments((prev) => prev.map((d) => (d.id === selectedId ? { ...d, excluded_from_retrieval: excluded } : d)))
+          }
+        />
+      )}
     </div>
   );
 }

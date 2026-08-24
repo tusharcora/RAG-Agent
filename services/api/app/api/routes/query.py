@@ -2,7 +2,7 @@ import json
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from google import genai
 from google.genai import errors as genai_errors
@@ -82,7 +82,12 @@ async def _open_gemini_stream(contents: list[genai_types.Content]):
     return await _genai_client.aio.models.generate_content_stream(
         model=settings.query_model,
         contents=contents,
-        config=genai_types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT, max_output_tokens=1024),
+        # 1024 was cutting real answers off mid-sentence for anything beyond a
+        # short factual question — citation-heavy, multi-excerpt synthesis
+        # routinely needs more. 4096 gives real headroom; finish_reason is
+        # still checked below so a truncation that happens anyway is surfaced
+        # to the frontend instead of silently handed over as a complete answer.
+        config=genai_types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT, max_output_tokens=4096),
     )
 
 
@@ -92,7 +97,18 @@ async def query(
     auth: AuthContext = Depends(require_auth),
     session: AsyncSession = Depends(get_session),
 ) -> StreamingResponse:
-    session_id = request.session_id or str(uuid.uuid4())
+    if request.session_id:
+        try:
+            # Normalizes casing/format too — chat_sessions.id is a real
+            # Postgres UUID primary key now (durable storage, see
+            # session_store.py), not an arbitrary Redis key string, so a
+            # malformed client-supplied id needs to fail cleanly here rather
+            # than blow up inside session_store's uuid.UUID(...) later.
+            session_id = str(uuid.UUID(request.session_id))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid session_id")
+    else:
+        session_id = str(uuid.uuid4())
     top_k = request.top_k or settings.query_top_k
 
     [question_embedding] = await embed_texts([request.question], input_type="query")
@@ -104,6 +120,11 @@ async def query(
         .where(
             Chunk.embedding.is_not(None),
             OAuthConnection.org_id == auth.org_id,
+            # A document flagged stale/wrong (see documents.py's
+            # PATCH .../exclude) must never surface as a source or get
+            # cited — filtered here, before ORDER BY ... LIMIT, same as the
+            # visibility filter below, not as a post-fetch step.
+            Document.excluded_from_retrieval.is_(False),
         )
     )
     if auth.role not in ("owner", "admin"):
@@ -131,9 +152,23 @@ async def query(
         # degraded recall is visible rather than silently confident.
         logger.info("Retrieved %d/%d rows for org=%s (permission filter may have reduced recall)", len(rows), top_k, auth.org_id)
 
-    history = await load_history(auth.org_id, auth.user_id, session_id) if request.session_id else []
+    history = await load_history(session, auth.org_id, auth.user_id, session_id) if request.session_id else []
 
     async def event_stream():
+        # Recorded before anything else in this turn — previously this only
+        # happened after the full Gemini answer finished streaming (further
+        # down), which meant a new conversation didn't show up in the session
+        # sidebar (GET /sessions reads this same index) until the whole
+        # response was done, sometimes many seconds later. append_history's
+        # upsert is what makes a session listed (and durably saved) at all;
+        # doing it this early means it's true the instant a question is sent,
+        # not once an answer completes. The FastAPI session dependency stays
+        # open for the life of a StreamingResponse (closed only after the
+        # response finishes sending), so reusing `session` inside this
+        # generator — well after the handler function itself has returned —
+        # is safe.
+        await append_history(session, auth.org_id, auth.user_id, session_id, "user", request.question)
+
         sources = [
             {"index": i + 1, "title": r["title"], "url": r["url"], "source": r["source"], "snippet": r["content"][:280]}
             for i, r in enumerate(rows)
@@ -145,7 +180,21 @@ async def query(
                 "I don't have any synced content to answer that yet — try running /sync/notion or /sync/jira first."
             )
             yield _sse("delta", {"text": fallback})
-            yield _sse("done", {"session_id": session_id, "cited_indices": [], "answer": fallback})
+            # Previously returned here without recording the assistant side of
+            # this turn at all — the fallback conversation existed in the
+            # sidebar (via the user-turn append above) but replaying it via
+            # GET /sessions/{id} would have shown only the question, no reply.
+            message_id = await append_history(session, auth.org_id, auth.user_id, session_id, "assistant", fallback)
+            yield _sse(
+                "done",
+                {
+                    "session_id": session_id,
+                    "cited_indices": [],
+                    "answer": fallback,
+                    "truncated": False,
+                    "message_id": str(message_id),
+                },
+            )
             return
 
         excerpt_block = "\n\n".join(
@@ -162,11 +211,14 @@ async def query(
             return
 
         full_answer = ""
+        truncated = False
         try:
             async for chunk in stream:
                 if chunk.text:
                     full_answer += chunk.text
                     yield _sse("delta", {"text": chunk.text})
+                if chunk.candidates and chunk.candidates[0].finish_reason == genai_types.FinishReason.MAX_TOKENS:
+                    truncated = True
         except Exception as exc:
             logger.exception("Gemini stream failed mid-response")
             yield _sse("error", {"message": str(exc)})
@@ -174,10 +226,20 @@ async def query(
 
         cited_indices = [i + 1 for i in range(len(rows)) if f"[{i + 1}]" in full_answer]
 
-        await append_history(auth.org_id, auth.user_id, session_id, "user", request.question)
-        await append_history(auth.org_id, auth.user_id, session_id, "assistant", full_answer)
+        # User turn already recorded at the top of event_stream(); only the
+        # assistant side is new here.
+        message_id = await append_history(session, auth.org_id, auth.user_id, session_id, "assistant", full_answer)
 
-        yield _sse("done", {"session_id": session_id, "cited_indices": cited_indices, "answer": full_answer})
+        yield _sse(
+            "done",
+            {
+                "session_id": session_id,
+                "cited_indices": cited_indices,
+                "answer": full_answer,
+                "truncated": truncated,
+                "message_id": str(message_id),
+            },
+        )
 
     return StreamingResponse(
         event_stream(),

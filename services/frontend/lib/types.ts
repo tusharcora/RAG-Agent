@@ -7,10 +7,13 @@ export interface Source {
 }
 
 export interface ChatMessage {
+  id?: string; // assistant messages only — needed to submit thumbs up/down feedback
   role: "user" | "assistant";
   content: string;
   sources?: Source[]; // only present on the turn that was live-streamed this session
   citedIndices?: number[];
+  truncated?: boolean; // true if Gemini hit max_output_tokens before finishing
+  feedback?: "up" | "down" | null;
 }
 
 export interface SessionSummary {
@@ -22,7 +25,7 @@ export interface SessionSummary {
 
 export interface SessionDetail {
   session_id: string;
-  history: { role: string; content: string }[];
+  history: { id: string; role: string; content: string; feedback: "up" | "down" | null }[];
 }
 
 export interface ConnectionStatus {
@@ -33,6 +36,8 @@ export interface ConnectionStatus {
   site_url: string | null;
   last_synced_at: string | null;
   visibility_mode: "org_wide" | "restricted" | null;
+  dead_lettered_count_24h: number;
+  last_sync_status: "received" | "processing" | "succeeded" | "failed" | "dead_lettered" | null;
 }
 
 export interface MeResponse {
@@ -56,6 +61,12 @@ export interface ConnectionPreview {
   truncated: boolean;
 }
 
+export interface VoyageUsage {
+  used: number;
+  budget: number;
+  percent: number;
+}
+
 export interface DocumentSummary {
   id: string;
   source: string;
@@ -64,6 +75,7 @@ export interface DocumentSummary {
   last_edited_at: string | null;
   synced_at: string;
   chunk_count: number;
+  excluded_from_retrieval: boolean;
 }
 
 export interface DocumentListResponse {
@@ -93,4 +105,11 @@ export interface EventLogEntry {
   trace_id: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface DlqEvent {
+  id: string;
+  routing_key: string;
+  error: string | null;
+  created_at: string;
 }

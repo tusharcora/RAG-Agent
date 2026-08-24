@@ -7,7 +7,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.postgresql import websearch_to_tsquery
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import AuthContext, require_auth
+from app.core.auth import AuthContext, require_auth, require_role
 from app.core.db import get_session
 from app.models.rag import Chunk, ConnectionMember, Document, OAuthConnection
 
@@ -22,6 +22,7 @@ class DocumentSummary(BaseModel):
     last_edited_at: datetime | None
     synced_at: datetime
     chunk_count: int
+    excluded_from_retrieval: bool
 
 
 class DocumentListResponse(BaseModel):
@@ -44,6 +45,7 @@ class DocumentDetail(BaseModel):
     url: str
     last_edited_at: datetime | None
     synced_at: datetime
+    excluded_from_retrieval: bool
     chunks: list[ChunkOut]
 
 
@@ -78,6 +80,7 @@ async def list_documents(
             Document.url,
             Document.last_edited_at,
             Document.synced_at,
+            Document.excluded_from_retrieval,
             func.count(Chunk.id).label("chunk_count"),
         )
         .join(OAuthConnection, OAuthConnection.id == Document.connection_id)
@@ -128,6 +131,7 @@ async def list_documents(
             last_edited_at=r.last_edited_at,
             synced_at=r.synced_at,
             chunk_count=r.chunk_count,
+            excluded_from_retrieval=r.excluded_from_retrieval,
         )
         for r in rows
     ]
@@ -167,6 +171,7 @@ async def document_detail(
         url=document.url,
         last_edited_at=document.last_edited_at,
         synced_at=document.synced_at,
+        excluded_from_retrieval=document.excluded_from_retrieval,
         chunks=[
             ChunkOut(
                 id=str(c.id),
@@ -177,4 +182,49 @@ async def document_detail(
             )
             for c in chunk_rows
         ],
+    )
+
+
+class SetExcludedRequest(BaseModel):
+    excluded: bool
+
+
+@router.patch("/{document_id}/exclude")
+async def set_document_excluded(
+    document_id: uuid.UUID,
+    request: SetExcludedRequest,
+    auth: AuthContext = Depends(require_auth),
+    session: AsyncSession = Depends(get_session),
+) -> DocumentSummary:
+    require_role(auth, "owner", "admin")
+
+    # Same org-scoped lookup document_detail uses (join to oauth_connections,
+    # require org_id match) — not the visibility allow-list, since this
+    # action is already owner/admin-only. 404 whether the row doesn't exist
+    # or belongs to another org, not a 403 that would leak existence.
+    stmt = (
+        select(Document)
+        .join(OAuthConnection, OAuthConnection.id == Document.connection_id)
+        .where(Document.id == document_id, OAuthConnection.org_id == auth.org_id)
+    )
+    document = (await session.execute(stmt)).scalar_one_or_none()
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    document.excluded_from_retrieval = request.excluded
+    await session.commit()
+
+    chunk_count = (
+        await session.execute(select(func.count(Chunk.id)).where(Chunk.document_id == document_id))
+    ).scalar_one()
+
+    return DocumentSummary(
+        id=str(document.id),
+        source=document.source,
+        title=document.title,
+        url=document.url,
+        last_edited_at=document.last_edited_at,
+        synced_at=document.synced_at,
+        chunk_count=chunk_count,
+        excluded_from_retrieval=document.excluded_from_retrieval,
     )

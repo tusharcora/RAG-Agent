@@ -33,6 +33,15 @@ class Settings(BaseSettings):
     jira_client_secret: str = ""
     jira_redirect_uri: str = "http://localhost:8000/oauth/jira/callback"
 
+    # Base64 Fernet key (cryptography.fernet.Fernet.generate_key()) encrypting
+    # oauth_connections.access_token/refresh_token at rest — see app/core/crypto.py.
+    # Must be byte-for-byte identical to services/worker/app/core/config.py's copy;
+    # the worker decrypts rows this service encrypted (and vice versa via jira_auth.py's
+    # refresh path), so a mismatch here isn't a crash, it's every decrypt failing
+    # InvalidToken. Same duplication-drift risk already documented for other settings
+    # shared between the two services' Settings classes.
+    token_encryption_key: str = ""
+
     embedding_model: str = "voyage-3-lite"
     embedding_dimensions: int = 512
     # Query-time embedding (this service, for /query's retrieval step) hits the
@@ -47,7 +56,11 @@ class Settings(BaseSettings):
     query_model: str = "gemini-3.6-flash"
     query_top_k: int = 5
 
-    session_history_ttl_seconds: int = 60 * 60  # 1h
+    # Chat history itself is durable (Postgres, no TTL — see
+    # infra/postgres/006_chat_history.sql / session_store.py); this only caps
+    # how many recent turns get sent to Gemini as conversation context per
+    # query, so a long-running conversation doesn't grow context/cost
+    # unbounded on every subsequent question.
     session_history_max_turns: int = 10
 
     oauth_state_ttl_seconds: int = 600  # 10min

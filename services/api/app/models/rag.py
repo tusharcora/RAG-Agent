@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import ForeignKey, Integer, Text, TIMESTAMP, UniqueConstraint, func
+from sqlalchemy import Boolean, ForeignKey, Integer, Text, TIMESTAMP, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -173,6 +173,12 @@ class Document(Base):
     # GENERATED ALWAYS AS ... STORED in infra/postgres/005_document_search.sql —
     # Postgres computes this from `title`, the app never writes it directly.
     search_vector: Mapped[str | None] = mapped_column(TSVECTOR, nullable=True)
+    # infra/postgres/008_document_exclude.sql. A document-level kill switch on
+    # top of OAuthConnection.visibility_mode — lets an owner/admin stop one
+    # stale/wrong document from being cited without disconnecting the whole
+    # connection. Checked in query.py's retrieval SELECT alongside the
+    # existing org/visibility filters.
+    excluded_from_retrieval: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
 
     # Scoped by connection_id rather than a separate org_id column: a connection
     # belongs to exactly one org (oauth_connections.org_id), so this is equivalent
@@ -195,3 +201,44 @@ class Chunk(Base):
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
 
     __table_args__ = (UniqueConstraint("document_id", "chunk_index"),)
+
+
+class ChatSession(Base):
+    """Mirrors infra/postgres/006_chat_history.sql. api-only — the worker
+    never reads or writes chat history, so unlike OAuthConnection/Document
+    above this isn't duplicated into services/worker/app/models/rag.py."""
+
+    __tablename__ = "chat_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    preview: Mapped[str | None] = mapped_column(Text, nullable=True)
+    turn_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+
+
+class ChatMessage(Base):
+    """Mirrors infra/postgres/006_chat_history.sql."""
+
+    __tablename__ = "chat_messages"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    role: Mapped[str] = mapped_column(Text, nullable=False)  # 'user' | 'assistant'
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+    # GENERATED ALWAYS AS ... STORED in infra/postgres/009_chat_search.sql —
+    # Postgres computes this from `content`, the app never writes it directly.
+    search_vector: Mapped[str | None] = mapped_column(TSVECTOR, nullable=True)
+    # Mirrors infra/postgres/007_message_feedback.sql. Null = no feedback
+    # given; only ever set on assistant messages, but nothing in this model
+    # enforces that — see the migration's comment.
+    feedback: Mapped[str | None] = mapped_column(Text, nullable=True)
