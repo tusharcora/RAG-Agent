@@ -151,8 +151,11 @@ export function redriveDlqEvent(id: string) {
   return post<{ event_log_id: string }>(`/dlq/${id}/redrive`);
 }
 
-export function getSessions() {
-  return get<SessionSummary[]>("/sessions?limit=30");
+export function getSessions(search?: string) {
+  const qs = new URLSearchParams();
+  qs.set("limit", "30");
+  if (search) qs.set("search", search);
+  return get<SessionSummary[]>(`/sessions?${qs.toString()}`);
 }
 
 export function getSession(id: string) {
