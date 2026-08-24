@@ -1,7 +1,7 @@
 import uuid
 
 from sqlalchemy import desc, func, select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.postgresql import insert as pg_insert, websearch_to_tsquery
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -74,8 +74,42 @@ async def append_history(
     await session.commit()
 
 
-async def list_sessions(session: AsyncSession, org_id: uuid.UUID, user_id: uuid.UUID, limit: int = 20) -> list[dict]:
-    """Newest-active first, scoped to one user within one org."""
+async def list_sessions(
+    session: AsyncSession, org_id: uuid.UUID, user_id: uuid.UUID, limit: int = 20, search: str | None = None
+) -> list[dict]:
+    """Newest-active first, scoped to one user within one org. With `search`,
+    joins to chat_messages and ranks by each session's single best-matching
+    message instead (func.max(ts_rank(...)) grouped by session) — a
+    conversation can have several matching messages, and without the GROUP BY
+    it'd surface once per match instead of once per session. Same
+    websearch_to_tsquery/ts_rank pattern as documents.py's list_documents,
+    against search_vector (infra/postgres/009_chat_search.sql, GENERATED from
+    chat_messages.content, not chat_sessions.preview — the preview is only
+    the opening ~140 chars of the first message)."""
+    if search:
+        tsquery = websearch_to_tsquery("english", search)
+        result = await session.execute(
+            select(ChatSession.id, ChatSession.preview, ChatSession.updated_at, ChatSession.turn_count)
+            .join(ChatMessage, ChatMessage.session_id == ChatSession.id)
+            .where(
+                ChatSession.org_id == org_id,
+                ChatSession.user_id == user_id,
+                ChatMessage.search_vector.op("@@")(tsquery),
+            )
+            .group_by(ChatSession.id)
+            .order_by(func.max(func.ts_rank(ChatMessage.search_vector, tsquery)).desc())
+            .limit(limit)
+        )
+        return [
+            {
+                "session_id": str(r.id),
+                "preview": r.preview,
+                "last_active": r.updated_at.timestamp(),
+                "turn_count": r.turn_count,
+            }
+            for r in result
+        ]
+
     result = await session.execute(
         select(ChatSession.id, ChatSession.preview, ChatSession.updated_at, ChatSession.turn_count)
         .where(ChatSession.org_id == org_id, ChatSession.user_id == user_id)

@@ -229,3 +229,6 @@ class ChatMessage(Base):
     role: Mapped[str] = mapped_column(Text, nullable=False)  # 'user' | 'assistant'
     content: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+    # GENERATED ALWAYS AS ... STORED in infra/postgres/009_chat_search.sql —
+    # Postgres computes this from `content`, the app never writes it directly.
+    search_vector: Mapped[str | None] = mapped_column(TSVECTOR, nullable=True)

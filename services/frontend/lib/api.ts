@@ -137,8 +137,11 @@ export function getEvents(params: { limit?: number; status?: string; routingKey?
   return get<EventLogEntry[]>(`/events/recent?${qs.toString()}`);
 }
 
-export function getSessions() {
-  return get<SessionSummary[]>("/sessions?limit=30");
+export function getSessions(search?: string) {
+  const qs = new URLSearchParams();
+  qs.set("limit", "30");
+  if (search) qs.set("search", search);
+  return get<SessionSummary[]>(`/sessions?${qs.toString()}`);
 }
 
 export function getSession(id: string) {

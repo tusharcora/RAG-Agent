@@ -29,10 +29,11 @@ class SessionDetail(BaseModel):
 @router.get("")
 async def sessions(
     limit: int = Query(20, le=100),
+    search: str | None = Query(None),
     auth: AuthContext = Depends(require_auth),
     session: AsyncSession = Depends(get_session),
 ) -> list[SessionSummary]:
-    return await list_sessions(session, auth.org_id, auth.user_id, limit)
+    return await list_sessions(session, auth.org_id, auth.user_id, limit, search=search)
 
 
 @router.get("/{session_id}")
