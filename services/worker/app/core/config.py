@@ -49,6 +49,15 @@ class Settings(BaseSettings):
     # the previous concurrency-only fix still exhausted its retry budget and
     # dead-lettered.
     voyage_requests_per_minute: int = 3
+    # Voyage's documented free allotment for Voyage series 3 models (per the
+    # X-Api-Warning header and https://docs.voyageai.com/docs/pricing) — a
+    # payment method on the account raises the RPM/TPM rate limits above, but
+    # this free-token allotment still applies on top of that; it's a separate
+    # cap embed_texts() enforces itself by tracking cumulative usage in Redis
+    # (shared with services/api, which embeds query text against the same
+    # Voyage account/key — see app/integrations/voyage.py). Keep this value
+    # identical to services/api/app/core/config.py's copy.
+    voyage_free_tier_token_budget: int = 200_000_000
     embedding_dimensions: int = 512
     notion_api_version: str = "2022-06-28"
 

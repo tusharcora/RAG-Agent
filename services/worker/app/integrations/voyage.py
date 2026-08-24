@@ -7,10 +7,18 @@ import httpx
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from app.core.config import settings
+from app.core.idempotency import get_redis
 
 logger = logging.getLogger(__name__)
 
 VOYAGE_API_URL = "https://api.voyageai.com/v1/embeddings"
+# Shared with services/api's copy of this module — both hit the same Voyage
+# account/key (this service embeds documents, api embeds query text at
+# /query time), so cumulative usage has to be tracked in one place both
+# processes can see, not per-process. No TTL: this is meant to persist for
+# the life of the free-tier allotment, not expire like the idempotency keys
+# this Redis client is otherwise used for.
+VOYAGE_TOKENS_USED_KEY = "voyage:tokens_used_total"
 
 # Module-level so it's shared across every embed_texts() call in this worker
 # process, not per-call — the whole point is bounding *total* concurrent
@@ -59,11 +67,47 @@ class VoyageRateLimited(Exception):
         super().__init__(f"Voyage rate limited, retry after {retry_after}s")
 
 
+class VoyageBudgetExceeded(Exception):
+    """Raised instead of ever calling Voyage once cumulative usage has
+    reached the configured free-tier budget. Deliberately NOT a
+    VoyageRateLimited subtype — tenacity's retry below only matches
+    VoyageRateLimited, so this propagates immediately instead of burning
+    retries against a limit that waiting doesn't fix."""
+
+    def __init__(self, used: int, budget: int):
+        self.used = used
+        self.budget = budget
+        super().__init__(f"Voyage free-tier token budget reached: {used}/{budget} tokens used")
+
+
 def _voyage_wait(retry_state):
     exc = retry_state.outcome.exception() if retry_state.outcome else None
     if isinstance(exc, VoyageRateLimited):
         return max(exc.retry_after, _MIN_RETRY_WAIT)
     return wait_exponential(multiplier=1, min=1, max=30)(retry_state)
+
+
+async def _check_budget() -> None:
+    """Checked before every call, not just logged after — this is meant to
+    stop spend, not just report it. The per-call token cost isn't known
+    until Voyage's response comes back, so this can't guarantee zero
+    overshoot on the single call that happens to cross the line (bounded by
+    voyage_max_concurrent_requests concurrent in-flight calls each up to one
+    batch's worth of tokens), but it stops every call after that one — a
+    best-effort cap, not exact-to-the-token."""
+    used = int(await get_redis().get(VOYAGE_TOKENS_USED_KEY) or 0)
+    budget = settings.voyage_free_tier_token_budget
+    if used >= budget:
+        raise VoyageBudgetExceeded(used, budget)
+
+
+async def _record_usage(tokens: int) -> None:
+    if tokens <= 0:
+        return
+    total = await get_redis().incrby(VOYAGE_TOKENS_USED_KEY, tokens)
+    budget = settings.voyage_free_tier_token_budget
+    if budget and total - tokens < budget * 0.9 <= total:
+        logger.warning("voyage: cumulative usage %d/%d tokens — 90%%+ of free-tier budget", total, budget)
 
 
 @retry(retry=retry_if_exception_type(VoyageRateLimited), wait=_voyage_wait, stop=stop_after_attempt(5), reraise=True)
@@ -76,6 +120,7 @@ async def embed_texts(texts: list[str], input_type: Literal["document", "query"]
     # embed_texts() calls take their turn instead of all queuing up behind
     # whichever call happened to hit the rate limit first.
     async with _voyage_semaphore:
+        await _check_budget()
         await _voyage_rate_gate.wait_turn()
         async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.post(
@@ -87,4 +132,5 @@ async def embed_texts(texts: list[str], input_type: Literal["document", "query"]
                 raise VoyageRateLimited(retry_after=float(resp.headers.get("Retry-After", 1)))
             resp.raise_for_status()
             data = resp.json()
+    await _record_usage(data.get("usage", {}).get("total_tokens", 0))
     return [item["embedding"] for item in data["data"]]

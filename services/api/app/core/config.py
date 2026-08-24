@@ -35,6 +35,14 @@ class Settings(BaseSettings):
 
     embedding_model: str = "voyage-3-lite"
     embedding_dimensions: int = 512
+    # Query-time embedding (this service, for /query's retrieval step) hits the
+    # same Voyage account/key as the worker's document embedding, so it needs
+    # the identical rate/budget protections — see app/integrations/voyage.py.
+    # Keep these three values identical to services/worker/app/core/config.py's
+    # copies (same duplication-drift risk as rag.py, called out in CLAUDE.md).
+    voyage_max_concurrent_requests: int = 3
+    voyage_requests_per_minute: int = 3
+    voyage_free_tier_token_budget: int = 200_000_000
 
     query_model: str = "gemini-3.6-flash"
     query_top_k: int = 5
