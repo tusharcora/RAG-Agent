@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import AuthContext, require_auth
 from app.core.config import settings
+from app.core.crypto import encrypt_token
 from app.core.db import get_session
 from app.core.redis import get_redis
 from app.models.rag import OAuthConnection
@@ -101,8 +102,8 @@ async def callback(
     connection.workspace_id = site["id"]  # Jira Cloud id, used in api.atlassian.com/ex/jira/{id}/... calls
     connection.workspace_name = site.get("name") or site["url"]
     connection.site_url = site["url"]
-    connection.access_token = token_data["access_token"]
-    connection.refresh_token = token_data.get("refresh_token")
+    connection.access_token = encrypt_token(token_data["access_token"])
+    connection.refresh_token = encrypt_token(token_data.get("refresh_token"))
     connection.expires_at = now + timedelta(seconds=token_data.get("expires_in", 3600))
     connection.bot_id = None
     connection.updated_at = now

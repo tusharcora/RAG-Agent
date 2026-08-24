@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime
 
 import httpx
+from cryptography.fernet import InvalidToken
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select
@@ -10,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.routes.sync import JIRA_SEARCH_URL_TMPL, NOTION_SEARCH_URL, _request
 from app.core.auth import AuthContext, require_auth, require_role
 from app.core.config import settings
+from app.core.crypto import decrypt_token
 from app.core.db import get_session
 from app.integrations.jira_auth import ensure_fresh_token
 from app.models.rag import ConnectionMember, Document, OAuthConnection
@@ -181,8 +183,15 @@ async def preview(
 
     async with httpx.AsyncClient(timeout=15) as client:
         if connection.provider == "notion":
+            try:
+                access_token = decrypt_token(connection.access_token)
+            except InvalidToken:
+                raise HTTPException(
+                    status_code=400,
+                    detail="This connection's stored credentials are no longer valid — please reconnect",
+                )
             headers = {
-                "Authorization": f"Bearer {connection.access_token}",
+                "Authorization": f"Bearer {access_token}",
                 "Notion-Version": settings.notion_api_version,
                 "Content-Type": "application/json",
             }
