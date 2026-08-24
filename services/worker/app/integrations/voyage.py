@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import Literal
 
@@ -9,6 +10,13 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 VOYAGE_API_URL = "https://api.voyageai.com/v1/embeddings"
+
+# Module-level so it's shared across every embed_texts() call in this worker
+# process, not per-call — the whole point is bounding *total* concurrent
+# requests to Voyage regardless of how many documents are being embedded at
+# once. See config.py's voyage_max_concurrent_requests for why this exists
+# alongside (not instead of) the tenacity retry below.
+_voyage_semaphore = asyncio.Semaphore(settings.voyage_max_concurrent_requests)
 
 
 class VoyageRateLimited(Exception):
@@ -29,14 +37,19 @@ async def embed_texts(texts: list[str], input_type: Literal["document", "query"]
     """Raw httpx against Voyage's REST API rather than the voyageai SDK —
     matches this repo's convention of no dedicated SDK wrappers except the
     officially-recommended `anthropic` package."""
-    async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.post(
-            VOYAGE_API_URL,
-            headers={"Authorization": f"Bearer {settings.voyage_api_key}"},
-            json={"input": texts, "model": settings.embedding_model, "input_type": input_type},
-        )
-        if resp.status_code == 429:
-            raise VoyageRateLimited(retry_after=float(resp.headers.get("Retry-After", 1)))
-        resp.raise_for_status()
-        data = resp.json()
+    # Held only around the actual in-flight request, not the tenacity backoff
+    # sleep on a 429 — releasing it during backoff lets other pending
+    # embed_texts() calls take their turn instead of all queuing up behind
+    # whichever call happened to hit the rate limit first.
+    async with _voyage_semaphore:
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(
+                VOYAGE_API_URL,
+                headers={"Authorization": f"Bearer {settings.voyage_api_key}"},
+                json={"input": texts, "model": settings.embedding_model, "input_type": input_type},
+            )
+            if resp.status_code == 429:
+                raise VoyageRateLimited(retry_after=float(resp.headers.get("Retry-After", 1)))
+            resp.raise_for_status()
+            data = resp.json()
     return [item["embedding"] for item in data["data"]]

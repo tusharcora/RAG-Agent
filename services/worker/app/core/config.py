@@ -26,6 +26,17 @@ class Settings(BaseSettings):
     # --- RAG agent ---
     voyage_api_key: str = ""
     embedding_model: str = "voyage-3-lite"
+    # Caps concurrent in-flight Voyage embedding requests specifically —
+    # prefetch_count above already bounds overall in-flight message
+    # concurrency, but that gates the whole per-document pipeline (Notion/
+    # Jira fetch, chunking, DB writes), not just the Voyage call. A bursty
+    # sync (many documents landing at once) can still fire prefetch_count
+    # concurrent embed_texts() calls even with prefetch_count left generous
+    # for throughput elsewhere, which is exactly what produced the
+    # "Voyage rate limited" dead-letters seen in production. This semaphore
+    # paces proactively instead of relying solely on embed_texts()'s
+    # reactive 429-then-retry in app/integrations/voyage.py.
+    voyage_max_concurrent_requests: int = 3
     embedding_dimensions: int = 512
     notion_api_version: str = "2022-06-28"
 

@@ -4,6 +4,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import func, or_, select
+from sqlalchemy.dialects.postgresql import websearch_to_tsquery
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import AuthContext, require_auth
@@ -83,7 +84,6 @@ async def list_documents(
         .outerjoin(Chunk, Chunk.document_id == Document.id)
         .where(OAuthConnection.org_id == auth.org_id)
         .group_by(Document.id)
-        .order_by(Document.synced_at.desc())
         .limit(limit)
         .offset(offset)
     )
@@ -103,8 +103,18 @@ async def list_documents(
         stmt = stmt.where(Document.source == source)
         count_stmt = count_stmt.where(Document.source == source)
     if search:
-        stmt = stmt.where(Document.title.ilike(f"%{search}%"))
-        count_stmt = count_stmt.where(Document.title.ilike(f"%{search}%"))
+        # websearch_to_tsquery tolerates plain user-typed phrases (quotes,
+        # "or", leading "-" to exclude a word) better than plainto_tsquery,
+        # and search_vector (infra/postgres/005_document_search.sql) is a
+        # GENERATED STORED column backed by a GIN index — no per-request
+        # to_tsvector() cost on the documents side like ILIKE's unindexed
+        # scan had.
+        tsquery = websearch_to_tsquery("english", search)
+        stmt = stmt.where(Document.search_vector.op("@@")(tsquery))
+        stmt = stmt.order_by(func.ts_rank(Document.search_vector, tsquery).desc())
+        count_stmt = count_stmt.where(Document.search_vector.op("@@")(tsquery))
+    else:
+        stmt = stmt.order_by(Document.synced_at.desc())
 
     rows = (await session.execute(stmt)).all()
     total = (await session.execute(count_stmt)).scalar_one()
