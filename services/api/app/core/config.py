@@ -33,6 +33,15 @@ class Settings(BaseSettings):
     jira_client_secret: str = ""
     jira_redirect_uri: str = "http://localhost:8000/oauth/jira/callback"
 
+    # Base64 Fernet key (cryptography.fernet.Fernet.generate_key()) encrypting
+    # oauth_connections.access_token/refresh_token at rest — see app/core/crypto.py.
+    # Must be byte-for-byte identical to services/worker/app/core/config.py's copy;
+    # the worker decrypts rows this service encrypted (and vice versa via jira_auth.py's
+    # refresh path), so a mismatch here isn't a crash, it's every decrypt failing
+    # InvalidToken. Same duplication-drift risk already documented for other settings
+    # shared between the two services' Settings classes.
+    token_encryption_key: str = ""
+
     embedding_model: str = "voyage-3-lite"
     embedding_dimensions: int = 512
     # Query-time embedding (this service, for /query's retrieval step) hits the

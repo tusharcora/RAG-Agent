@@ -66,5 +66,14 @@ class Settings(BaseSettings):
     jira_client_id: str = ""
     jira_client_secret: str = ""
 
+    # Base64 Fernet key (cryptography.fernet.Fernet.generate_key()) encrypting
+    # oauth_connections.access_token/refresh_token at rest — see app/core/crypto.py.
+    # Must be byte-for-byte identical to services/api/app/core/config.py's copy;
+    # the worker decrypts rows the api encrypted (and vice versa via jira.py's own
+    # refresh path), so a mismatch here isn't a crash, it's every decrypt failing
+    # InvalidToken. Same duplication-drift risk already documented for other settings
+    # shared between the two services' Settings classes.
+    token_encryption_key: str = ""
+
 
 settings = Settings()

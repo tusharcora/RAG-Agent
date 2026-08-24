@@ -1,6 +1,7 @@
 import logging
 
 import httpx
+from cryptography.fernet import InvalidToken
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,6 +9,7 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 
 from app.core.auth import AuthContext, require_auth_or_service_token
 from app.core.config import settings
+from app.core.crypto import decrypt_token
 from app.core.db import get_session
 from app.core.queue import publish_event
 from app.core.ratelimit import rate_limiter
@@ -61,11 +63,19 @@ async def sync_notion_connection(session: AsyncSession, connection: OAuthConnect
     it's all handled by the worker off the queue. Shared by the /notion route
     (single connection, resolved from the caller's auth) and auto_sync.py's
     periodic scheduler (every connection, no caller/auth involved)."""
+    try:
+        access_token = decrypt_token(connection.access_token)
+    except InvalidToken:
+        raise HTTPException(
+            status_code=400,
+            detail="This connection's stored credentials are no longer valid — please reconnect",
+        )
+
     published = 0
     truncated = False
     cursor: str | None = None
     headers = {
-        "Authorization": f"Bearer {connection.access_token}",
+        "Authorization": f"Bearer {access_token}",
         "Notion-Version": settings.notion_api_version,
         "Content-Type": "application/json",
     }

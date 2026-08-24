@@ -3,8 +3,10 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
+from cryptography.fernet import InvalidToken
 from sqlalchemy import delete, select
 
+from app.core.crypto import decrypt_token
 from app.core.db import get_session
 from app.core.telemetry import tracer
 from app.integrations.jira import JiraClient
@@ -126,7 +128,21 @@ async def handle_notion_page_updated(payload: dict) -> None:
                 logger.warning("No oauth_connections row for connection_id=%s, dropping", connection_id)
                 return
 
-            client = NotionClient(connection.access_token)
+            # connection.access_token is ciphertext at rest (see app/core/crypto.py).
+            # A row written before encryption landed (or otherwise corrupted) raises
+            # InvalidToken — log clearly and let it propagate, same treatment as any
+            # other handler failure (main.py retries, then dead-letters).
+            try:
+                access_token = decrypt_token(connection.access_token)
+            except InvalidToken:
+                logger.error(
+                    "connection_id=%s has undecryptable stored credentials (pre-encryption "
+                    "plaintext, or corrupted) — reconnect required",
+                    connection_id,
+                )
+                raise
+
+            client = NotionClient(access_token)
             metadata = await client.fetch_page_metadata(page_id)
             content = await client.fetch_page_content(page_id)
 
