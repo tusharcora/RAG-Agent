@@ -47,6 +47,13 @@ class Settings(BaseSettings):
     max_pages_per_sync: int = 200
     max_issues_per_sync: int = 200
 
+    # Periodic re-sync (app/core/auto_sync.py): re-runs the same enumerate+publish
+    # logic /sync/{provider} exposes manually, for every connection, on an interval —
+    # symmetric across Notion and Jira (unlike a Jira-only webhook, which the CLAUDE.md
+    # architecture explicitly avoids to keep the two providers' sync model matching).
+    auto_sync_enabled: bool = True
+    auto_sync_interval_minutes: int = 60
+
     rate_limit_query_per_minute: int = 10
     rate_limit_sync_per_minute: int = 2
     rate_limit_login_per_minute: int = 10
