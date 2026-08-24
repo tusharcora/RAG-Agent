@@ -64,6 +64,7 @@ export interface DocumentSummary {
   last_edited_at: string | null;
   synced_at: string;
   chunk_count: number;
+  excluded_from_retrieval: boolean;
 }
 
 export interface DocumentListResponse {

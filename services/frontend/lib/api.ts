@@ -3,6 +3,7 @@ import type {
   ConnectionStatus,
   DocumentDetail,
   DocumentListResponse,
+  DocumentSummary,
   EventLogEntry,
   MeResponse,
   OrgMember,
@@ -127,6 +128,10 @@ export function getDocuments(params: { source?: string; search?: string; limit?:
 
 export function getDocument(id: string) {
   return get<DocumentDetail>(`/documents/${id}`);
+}
+
+export function setDocumentExcluded(documentId: string, excluded: boolean) {
+  return patch<DocumentSummary>(`/documents/${documentId}/exclude`, { excluded });
 }
 
 export function getEvents(params: { limit?: number; status?: string; routingKey?: string }) {

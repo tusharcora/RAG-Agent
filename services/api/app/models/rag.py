@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import ForeignKey, Integer, Text, TIMESTAMP, UniqueConstraint, func
+from sqlalchemy import Boolean, ForeignKey, Integer, Text, TIMESTAMP, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -173,6 +173,12 @@ class Document(Base):
     # GENERATED ALWAYS AS ... STORED in infra/postgres/005_document_search.sql —
     # Postgres computes this from `title`, the app never writes it directly.
     search_vector: Mapped[str | None] = mapped_column(TSVECTOR, nullable=True)
+    # infra/postgres/008_document_exclude.sql. A document-level kill switch on
+    # top of OAuthConnection.visibility_mode — lets an owner/admin stop one
+    # stale/wrong document from being cited without disconnecting the whole
+    # connection. Checked in query.py's retrieval SELECT alongside the
+    # existing org/visibility filters.
+    excluded_from_retrieval: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
 
     # Scoped by connection_id rather than a separate org_id column: a connection
     # belongs to exactly one org (oauth_connections.org_id), so this is equivalent

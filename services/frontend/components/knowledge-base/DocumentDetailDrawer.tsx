@@ -2,14 +2,27 @@
 
 import { useEffect, useState } from "react";
 import { X } from "@untitledui/icons";
-import { getDocument } from "@/lib/api";
+import { getDocument, setDocumentExcluded } from "@/lib/api";
 import { Button } from "@/components/base/buttons/button";
 import { Badge } from "@/components/base/badges/badges";
+import { Toggle } from "@/components/base/toggle/toggle";
+import { useAuth } from "@/lib/auth-context";
 import type { DocumentDetail } from "@/lib/types";
 
-export function DocumentDetailDrawer({ documentId, onClose }: { documentId: string; onClose: () => void }) {
+export function DocumentDetailDrawer({
+  documentId,
+  onClose,
+  onExcludedChange,
+}: {
+  documentId: string;
+  onClose: () => void;
+  onExcludedChange?: (excluded: boolean) => void;
+}) {
   const [detail, setDetail] = useState<DocumentDetail | null>(null);
   const [error, setError] = useState(false);
+  const [savingExcluded, setSavingExcluded] = useState(false);
+  const { user } = useAuth();
+  const isAdmin = user?.role === "owner" || user?.role === "admin";
 
   useEffect(() => {
     setDetail(null);
@@ -18,6 +31,18 @@ export function DocumentDetailDrawer({ documentId, onClose }: { documentId: stri
       .then(setDetail)
       .catch(() => setError(true));
   }, [documentId]);
+
+  async function handleExcludedChange(excluded: boolean) {
+    if (!detail) return;
+    setSavingExcluded(true);
+    try {
+      await setDocumentExcluded(documentId, excluded);
+      setDetail({ ...detail, excluded_from_retrieval: excluded });
+      onExcludedChange?.(excluded);
+    } finally {
+      setSavingExcluded(false);
+    }
+  }
 
   return (
     <aside className="w-[28rem] shrink-0 overflow-y-auto border-l border-ink-800 bg-ink-900/40 p-4">
@@ -34,6 +59,21 @@ export function DocumentDetailDrawer({ documentId, onClose }: { documentId: stri
       </div>
 
       {error && <p className="text-sm text-coral-400">Couldn't load this document.</p>}
+
+      {detail && isAdmin && (
+        <div className="mb-3 flex items-center justify-between gap-2 rounded-xl border border-ink-800 bg-ink-950/60 p-3">
+          <div className="min-w-0">
+            <p className="text-xs font-medium text-ink-200">Exclude from retrieval</p>
+            <p className="text-xs text-ink-500">Stop citing this document in /query without disconnecting the sync.</p>
+          </div>
+          <Toggle
+            isSelected={detail.excluded_from_retrieval}
+            isDisabled={savingExcluded}
+            onChange={handleExcludedChange}
+            aria-label="Exclude from retrieval"
+          />
+        </div>
+      )}
 
       {detail && (
         <div className="space-y-3">

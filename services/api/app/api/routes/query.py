@@ -120,6 +120,11 @@ async def query(
         .where(
             Chunk.embedding.is_not(None),
             OAuthConnection.org_id == auth.org_id,
+            # A document flagged stale/wrong (see documents.py's
+            # PATCH .../exclude) must never surface as a source or get
+            # cited — filtered here, before ORDER BY ... LIMIT, same as the
+            # visibility filter below, not as a post-fetch step.
+            Document.excluded_from_retrieval.is_(False),
         )
     )
     if auth.role not in ("owner", "admin"):
