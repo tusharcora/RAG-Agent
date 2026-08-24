@@ -49,6 +49,7 @@ function ChatPage() {
   const [draftAnswer, setDraftAnswer] = useState("");
   const [draftSources, setDraftSources] = useState<Source[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [sessionRefreshSignal, setSessionRefreshSignal] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -62,6 +63,11 @@ function ChatPage() {
     setDraftAnswer("");
     setDraftSources([]);
     scrollToBottom();
+    // The backend records this turn (and indexes the session) as soon as the
+    // question is sent, not once the answer finishes — bumping this right
+    // away lets the sidebar pick up a brand-new conversation immediately
+    // instead of waiting for its 15s poll.
+    setSessionRefreshSignal((n) => n + 1);
 
     // Scoped to this call, not React state — SSE events for this call arrive
     // in order (sources before done), so this is always fresh when onDone reads it.
@@ -78,9 +84,12 @@ function ChatPage() {
         setDraftAnswer((prev) => prev + text);
         scrollToBottom();
       },
-      onDone: (sid, citedIndices, answer) => {
+      onDone: (sid, citedIndices, answer, truncated) => {
         setSessionId(sid);
-        setMessages((prev) => [...prev, { role: "assistant", content: answer, sources: sourcesForThisTurn, citedIndices }]);
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", content: answer, sources: sourcesForThisTurn, citedIndices, truncated },
+        ]);
         setIsStreaming(false);
         setDraftAnswer("");
         setDraftSources([]);
@@ -124,7 +133,12 @@ function ChatPage() {
 
   return (
     <div className="flex h-[calc(100vh-57px)]">
-      <SessionSidebar activeSessionId={sessionId} onSelect={handleSelectSession} onNewChat={handleNewChat} />
+      <SessionSidebar
+        activeSessionId={sessionId}
+        onSelect={handleSelectSession}
+        onNewChat={handleNewChat}
+        refreshSignal={sessionRefreshSignal}
+      />
 
       {isEmpty ? (
         <div className="flex min-w-0 flex-1 flex-col items-center justify-center px-6">
@@ -205,7 +219,12 @@ function MessageBubble({ message, pending }: { message: ChatMessage; pending?: b
         ) : isUser ? (
           message.content
         ) : (
-          <CitationText text={message.content} />
+          <>
+            <CitationText text={message.content} />
+            {message.truncated && (
+              <p className="mt-1.5 text-xs text-ink-500">Response was cut short — ask to continue for more.</p>
+            )}
+          </>
         )}
       </div>
     </div>

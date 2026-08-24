@@ -11,10 +11,17 @@ export function SessionSidebar({
   activeSessionId,
   onSelect,
   onNewChat,
+  refreshSignal,
 }: {
   activeSessionId: string | null;
   onSelect: (sessionId: string) => void;
   onNewChat: () => void;
+  // Bumped by the parent right when a question is sent, so a brand-new
+  // conversation shows up here immediately instead of waiting up to 15s for
+  // the next poll — the backend now records the session the instant a
+  // question is sent (see query.py), so there's something to fetch by the
+  // time this fires.
+  refreshSignal?: number;
 }) {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
 
@@ -24,7 +31,7 @@ export function SessionSidebar({
       .catch(() => {});
   }, []);
 
-  useEffect(refresh, [refresh]);
+  useEffect(refresh, [refresh, refreshSignal]);
   useInterval(refresh, 15000);
 
   return (

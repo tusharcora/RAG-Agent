@@ -82,7 +82,12 @@ async def _open_gemini_stream(contents: list[genai_types.Content]):
     return await _genai_client.aio.models.generate_content_stream(
         model=settings.query_model,
         contents=contents,
-        config=genai_types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT, max_output_tokens=1024),
+        # 1024 was cutting real answers off mid-sentence for anything beyond a
+        # short factual question — citation-heavy, multi-excerpt synthesis
+        # routinely needs more. 4096 gives real headroom; finish_reason is
+        # still checked below so a truncation that happens anyway is surfaced
+        # to the frontend instead of silently handed over as a complete answer.
+        config=genai_types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT, max_output_tokens=4096),
     )
 
 
@@ -134,6 +139,16 @@ async def query(
     history = await load_history(auth.org_id, auth.user_id, session_id) if request.session_id else []
 
     async def event_stream():
+        # Recorded before anything else in this turn — previously this only
+        # happened after the full Gemini answer finished streaming (further
+        # down), which meant a new conversation didn't show up in the session
+        # sidebar (GET /sessions reads this same index) until the whole
+        # response was done, sometimes many seconds later. append_history's
+        # zadd to the sessions index is what makes a session listed at all;
+        # doing it this early means it's true the instant a question is sent,
+        # not once an answer completes.
+        await append_history(auth.org_id, auth.user_id, session_id, "user", request.question)
+
         sources = [
             {"index": i + 1, "title": r["title"], "url": r["url"], "source": r["source"], "snippet": r["content"][:280]}
             for i, r in enumerate(rows)
@@ -145,7 +160,12 @@ async def query(
                 "I don't have any synced content to answer that yet — try running /sync/notion or /sync/jira first."
             )
             yield _sse("delta", {"text": fallback})
-            yield _sse("done", {"session_id": session_id, "cited_indices": [], "answer": fallback})
+            # Previously returned here without recording the assistant side of
+            # this turn at all — the fallback conversation existed in the
+            # sidebar (via the user-turn append above) but replaying it via
+            # GET /sessions/{id} would have shown only the question, no reply.
+            await append_history(auth.org_id, auth.user_id, session_id, "assistant", fallback)
+            yield _sse("done", {"session_id": session_id, "cited_indices": [], "answer": fallback, "truncated": False})
             return
 
         excerpt_block = "\n\n".join(
@@ -162,11 +182,14 @@ async def query(
             return
 
         full_answer = ""
+        truncated = False
         try:
             async for chunk in stream:
                 if chunk.text:
                     full_answer += chunk.text
                     yield _sse("delta", {"text": chunk.text})
+                if chunk.candidates and chunk.candidates[0].finish_reason == genai_types.FinishReason.MAX_TOKENS:
+                    truncated = True
         except Exception as exc:
             logger.exception("Gemini stream failed mid-response")
             yield _sse("error", {"message": str(exc)})
@@ -174,10 +197,14 @@ async def query(
 
         cited_indices = [i + 1 for i in range(len(rows)) if f"[{i + 1}]" in full_answer]
 
-        await append_history(auth.org_id, auth.user_id, session_id, "user", request.question)
+        # User turn already recorded at the top of event_stream(); only the
+        # assistant side is new here.
         await append_history(auth.org_id, auth.user_id, session_id, "assistant", full_answer)
 
-        yield _sse("done", {"session_id": session_id, "cited_indices": cited_indices, "answer": full_answer})
+        yield _sse(
+            "done",
+            {"session_id": session_id, "cited_indices": cited_indices, "answer": full_answer, "truncated": truncated},
+        )
 
     return StreamingResponse(
         event_stream(),

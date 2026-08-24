@@ -11,6 +11,7 @@ export interface ChatMessage {
   content: string;
   sources?: Source[]; // only present on the turn that was live-streamed this session
   citedIndices?: number[];
+  truncated?: boolean; // true if Gemini hit max_output_tokens before finishing
 }
 
 export interface SessionSummary {
