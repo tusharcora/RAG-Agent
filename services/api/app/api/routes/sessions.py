@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import AuthContext, require_auth
 from app.core.db import get_session
-from app.core.session_store import get_session_detail, list_sessions, set_feedback
+from app.core.session_store import delete_session, get_session_detail, list_sessions, set_feedback
 
 router = APIRouter(dependencies=[Depends(require_auth)])
 
@@ -57,6 +57,22 @@ async def session_detail(
     if history is None:
         raise HTTPException(status_code=404, detail="Session not found")
     return SessionDetail(session_id=session_id, history=history)
+
+
+@router.delete("/{session_id}", status_code=204)
+async def delete_session_route(
+    session_id: str,
+    auth: AuthContext = Depends(require_auth),
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    # Same malformed-id-can't-belong-to-anyone reasoning as session_detail above.
+    try:
+        uuid.UUID(session_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Session not found")
+    deleted = await delete_session(session, auth.org_id, auth.user_id, session_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Session not found")
 
 
 class FeedbackRequest(BaseModel):

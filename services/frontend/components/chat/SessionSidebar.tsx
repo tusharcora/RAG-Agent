@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Plus, SearchLg } from "@untitledui/icons";
-import { getSessions } from "@/lib/api";
+import { Plus, SearchLg, Trash01 } from "@untitledui/icons";
+import { deleteSession, getSessions } from "@/lib/api";
 import { useInterval } from "@/hooks/useInterval";
 import type { SessionSummary } from "@/lib/types";
 import { Button } from "@/components/base/buttons/button";
@@ -13,6 +13,7 @@ export function SessionSidebar({
   onSelect,
   onNewChat,
   refreshSignal,
+  onDeleted,
 }: {
   activeSessionId: string | null;
   onSelect: (sessionId: string) => void;
@@ -23,6 +24,9 @@ export function SessionSidebar({
   // question is sent (see query.py), so there's something to fetch by the
   // time this fires.
   refreshSignal?: number;
+  // Called after a successful delete so the parent can start a new chat if
+  // the conversation that just got removed was the one currently open.
+  onDeleted?: (sessionId: string) => void;
 }) {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [search, setSearch] = useState("");
@@ -43,6 +47,17 @@ export function SessionSidebar({
 
   useEffect(refresh, [refresh, refreshSignal]);
   useInterval(refresh, 15000);
+
+  // Optimistic — a delete should feel instant, and this list is cheap to
+  // refetch/restore if it fails. Reverted on failure the same way feedback
+  // clicks are elsewhere in this app.
+  const handleDelete = (sessionId: string) => {
+    const previous = sessions;
+    setSessions((prev) => prev.filter((s) => s.session_id !== sessionId));
+    deleteSession(sessionId)
+      .then(() => onDeleted?.(sessionId))
+      .catch(() => setSessions(previous));
+  };
 
   return (
     <aside className="flex w-64 shrink-0 flex-col border-r border-ink-800 bg-ink-900/40">
@@ -69,11 +84,11 @@ export function SessionSidebar({
         )}
         <ul className="space-y-1">
           {sessions.map((s) => (
-            <li key={s.session_id}>
+            <li key={s.session_id} className="group relative">
               <button
                 type="button"
                 onClick={() => onSelect(s.session_id)}
-                className={`cyber-chamfer-sm w-full truncate rounded-lg px-2 py-2 text-left text-sm transition ${
+                className={`cyber-chamfer-sm w-full truncate rounded-lg py-2 pl-2 pr-8 text-left text-sm transition ${
                   s.session_id === activeSessionId
                     ? "bg-coral-500/15 text-coral-200"
                     : "text-ink-400 hover:bg-ink-800/60 hover:text-ink-200"
@@ -82,6 +97,19 @@ export function SessionSidebar({
               >
                 {s.preview || "Untitled conversation"}
                 <span className="ml-1 text-xs text-ink-600">· {s.turn_count} turns</span>
+              </button>
+              {/* Hover-only — a permanently visible delete icon on every row is
+                  just noise for something this destructive and infrequent. */}
+              <button
+                type="button"
+                aria-label="Delete conversation"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleDelete(s.session_id);
+                }}
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-md p-1 text-ink-600 opacity-0 transition hover:text-coral-400 group-hover:opacity-100"
+              >
+                <Trash01 className="h-3.5 w-3.5" />
               </button>
             </li>
           ))}

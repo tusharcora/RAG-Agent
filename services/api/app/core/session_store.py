@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import desc, func, select, update
+from sqlalchemy import delete, desc, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert, websearch_to_tsquery
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -100,6 +100,20 @@ async def set_feedback(
             ChatSession.user_id == user_id,
         )
         .values(feedback=feedback)
+    )
+    await session.commit()
+    return result.rowcount > 0
+
+
+async def delete_session(session: AsyncSession, org_id: uuid.UUID, user_id: uuid.UUID, session_id: str) -> bool:
+    """Deletes the chat_sessions row; chat_messages.session_id's ON DELETE
+    CASCADE takes care of its messages. Scoped by org_id+user_id same as
+    everywhere else in this file — a session_id belonging to someone else
+    deletes nothing and returns False so the route can 404 rather than
+    silently no-op."""
+    sid = uuid.UUID(session_id)
+    result = await session.execute(
+        delete(ChatSession).where(ChatSession.id == sid, ChatSession.org_id == org_id, ChatSession.user_id == user_id)
     )
     await session.commit()
     return result.rowcount > 0

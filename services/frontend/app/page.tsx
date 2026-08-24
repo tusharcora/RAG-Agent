@@ -226,6 +226,9 @@ function ChatPage() {
         onSelect={handleSelectSession}
         onNewChat={handleNewChat}
         refreshSignal={sessionRefreshSignal}
+        onDeleted={(deletedId) => {
+          if (deletedId === sessionId) handleNewChat();
+        }}
       />
 
       {isEmpty ? (

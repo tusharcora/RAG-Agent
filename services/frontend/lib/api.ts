@@ -71,6 +71,13 @@ async function put<T>(path: string, body?: unknown): Promise<T> {
   return res.json();
 }
 
+async function del<T>(path: string): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, { method: "DELETE", headers: buildHeaders(), credentials: "include" });
+  if (!res.ok) throw new ApiError(res.status, `DELETE ${path} failed: ${res.status}`);
+  if (res.status === 204) return undefined as T;
+  return res.json();
+}
+
 // --- Auth ---
 
 export function signup(request: { email: string; password: string; display_name?: string; org_name?: string; invite_token?: string }) {
@@ -161,6 +168,10 @@ export function getSessions(search?: string) {
   qs.set("limit", "30");
   if (search) qs.set("search", search);
   return get<SessionSummary[]>(`/sessions?${qs.toString()}`);
+}
+
+export function deleteSession(id: string) {
+  return del<void>(`/sessions/${id}`);
 }
 
 export function getSession(id: string) {

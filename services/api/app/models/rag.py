@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Boolean, ForeignKey, Integer, Text, TIMESTAMP, UniqueConstraint, func
+from sqlalchemy import Boolean, Computed, ForeignKey, Integer, Text, TIMESTAMP, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -172,7 +172,15 @@ class Document(Base):
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
     # GENERATED ALWAYS AS ... STORED in infra/postgres/005_document_search.sql —
     # Postgres computes this from `title`, the app never writes it directly.
-    search_vector: Mapped[str | None] = mapped_column(TSVECTOR, nullable=True)
+    # Computed(persisted=True) here matters, not just documentation: without
+    # it SQLAlchemy still sends this column in every INSERT (as NULL, since
+    # nothing ever assigns it), and Postgres hard-rejects any explicit value
+    # — even NULL — into a GENERATED ALWAYS column with GeneratedAlwaysError.
+    # Computed() tells the ORM this column is server-managed and to omit it
+    # from INSERT/UPDATE entirely.
+    search_vector: Mapped[str | None] = mapped_column(
+        TSVECTOR, Computed("to_tsvector('english', title)", persisted=True), nullable=True
+    )
     # infra/postgres/008_document_exclude.sql. A document-level kill switch on
     # top of OAuthConnection.visibility_mode — lets an owner/admin stop one
     # stale/wrong document from being cited without disconnecting the whole
@@ -237,7 +245,13 @@ class ChatMessage(Base):
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
     # GENERATED ALWAYS AS ... STORED in infra/postgres/009_chat_search.sql —
     # Postgres computes this from `content`, the app never writes it directly.
-    search_vector: Mapped[str | None] = mapped_column(TSVECTOR, nullable=True)
+    # Computed(persisted=True) matters, not just documentation — see the
+    # identical comment on Document.search_vector above for why: without it
+    # every new message insert failed with GeneratedAlwaysError, since
+    # SQLAlchemy sent this column as an explicit NULL on every INSERT.
+    search_vector: Mapped[str | None] = mapped_column(
+        TSVECTOR, Computed("to_tsvector('english', content)", persisted=True), nullable=True
+    )
     # Mirrors infra/postgres/007_message_feedback.sql. Null = no feedback
     # given; only ever set on assistant messages, but nothing in this model
     # enforces that — see the migration's comment.
