@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { Dialog, Modal, ModalOverlay } from "react-aria-components";
 import { Plus, SearchLg, Trash01 } from "@untitledui/icons";
 import { deleteSession, getSessions } from "@/lib/api";
 import { useInterval } from "@/hooks/useInterval";
@@ -48,12 +49,20 @@ export function SessionSidebar({
   useEffect(refresh, [refresh, refreshSignal]);
   useInterval(refresh, 15000);
 
-  // Optimistic — a delete should feel instant, and this list is cheap to
-  // refetch/restore if it fails. Reverted on failure the same way feedback
-  // clicks are elsewhere in this app.
-  const handleDelete = (sessionId: string) => {
+  // Holds the session pending confirmation, not just its id — the dialog
+  // shows its preview text so "are you sure" is about a specific,
+  // recognizable conversation instead of a bare id.
+  const [pendingDelete, setPendingDelete] = useState<SessionSummary | null>(null);
+
+  // Optimistic — a delete should feel instant once confirmed, and this list
+  // is cheap to refetch/restore if it fails. Reverted on failure the same
+  // way feedback clicks are elsewhere in this app.
+  const confirmDelete = () => {
+    if (!pendingDelete) return;
+    const sessionId = pendingDelete.session_id;
     const previous = sessions;
     setSessions((prev) => prev.filter((s) => s.session_id !== sessionId));
+    setPendingDelete(null);
     deleteSession(sessionId)
       .then(() => onDeleted?.(sessionId))
       .catch(() => setSessions(previous));
@@ -105,7 +114,7 @@ export function SessionSidebar({
                 aria-label="Delete conversation"
                 onClick={(e) => {
                   e.stopPropagation();
-                  handleDelete(s.session_id);
+                  setPendingDelete(s);
                 }}
                 className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-md p-1 text-ink-600 opacity-0 transition hover:text-coral-400 group-hover:opacity-100"
               >
@@ -115,6 +124,34 @@ export function SessionSidebar({
           ))}
         </ul>
       </div>
+
+      <ModalOverlay
+        isOpen={pendingDelete !== null}
+        onOpenChange={(open) => !open && setPendingDelete(null)}
+        isDismissable
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+      >
+        <Modal>
+          <Dialog
+            className="cyber-chamfer-sm w-80 rounded-xl border border-ink-800 bg-ink-900 p-4 shadow-panel outline-none"
+            aria-label="Delete conversation"
+          >
+            <p className="text-sm font-semibold text-ink-100">Delete this conversation?</p>
+            <p className="mt-1.5 line-clamp-2 text-sm text-ink-400">
+              {pendingDelete?.preview || "Untitled conversation"}
+            </p>
+            <p className="mt-2 text-xs text-ink-600">This can't be undone.</p>
+            <div className="mt-4 flex justify-end gap-2">
+              <Button color="secondary" size="sm" onPress={() => setPendingDelete(null)}>
+                Cancel
+              </Button>
+              <Button color="primary-destructive" size="sm" onPress={confirmDelete}>
+                Delete
+              </Button>
+            </div>
+          </Dialog>
+        </Modal>
+      </ModalOverlay>
     </aside>
   );
 }
