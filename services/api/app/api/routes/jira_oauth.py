@@ -27,6 +27,12 @@ JIRA_SCOPES = "read:jira-work read:jira-user offline_access"
 
 @router.get("/authorize")
 async def authorize(auth: AuthContext = Depends(require_auth)) -> RedirectResponse:
+    # Same guard as notion_oauth.py's /authorize — without it, an unset
+    # JIRA_CLIENT_ID silently redirects to Atlassian with an empty client_id
+    # and the user lands on a confusing raw Atlassian API error.
+    if not settings.jira_client_id:
+        raise HTTPException(status_code=503, detail="Jira is not configured")
+
     # See notion_oauth.py's /authorize for why org_id is threaded through the
     # CSRF state value rather than a separate side-channel.
     state = secrets.token_urlsafe(32)

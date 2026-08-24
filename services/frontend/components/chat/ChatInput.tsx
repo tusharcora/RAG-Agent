@@ -1,7 +1,19 @@
 "use client";
 
 import { useState, type KeyboardEvent } from "react";
+import { ArrowUp } from "@untitledui/icons";
+import { TextArea } from "@/components/base/textarea/textarea";
+import { Button } from "@/components/base/buttons/button";
 
+/**
+ * The composer, styled as a single rounded pill-like surface rather than a
+ * plain rectangular textarea + separate button - the textarea itself is
+ * stripped of its own border/ring/shadow (textAreaClassName overrides win
+ * because tailwind-merge resolves conflicting utilities by which one is
+ * later in the merged class string, and textAreaClassName is always merged
+ * in last) so the surrounding div is the only visible chrome, and the send
+ * button is a circular icon button embedded inside it.
+ */
 export function ChatInput({ disabled, onSend }: { disabled: boolean; onSend: (question: string) => void }) {
   const [value, setValue] = useState("");
 
@@ -20,26 +32,27 @@ export function ChatInput({ disabled, onSend }: { disabled: boolean; onSend: (qu
   };
 
   return (
-    <div className="border-t border-ink-800 bg-ink-900/40 p-3">
-      <div className="flex items-end gap-2">
-        <textarea
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          onKeyDown={handleKeyDown}
-          disabled={disabled}
-          placeholder={disabled ? "Waiting for the current answer…" : "Ask about your Notion or Jira content…"}
-          rows={1}
-          className="max-h-40 flex-1 resize-none rounded-xl border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-ink-100 placeholder:text-ink-600 focus:border-coral-500 focus:outline-none disabled:opacity-50"
-        />
-        <button
-          type="button"
-          onClick={submit}
-          disabled={disabled || !value.trim()}
-          className="rounded-xl bg-coral-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-coral-400 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          Send
-        </button>
-      </div>
+    <div className="cyber-chamfer flex items-end gap-2 rounded-[28px] border border-ink-700 bg-ink-900/80 py-2 pr-2 pl-4 shadow-panel transition focus-within:border-coral-500/50">
+      <span className="cyber-terminal-prompt self-center">&gt;</span>
+      <TextArea
+        aria-label="Ask a question"
+        value={value}
+        onChange={setValue}
+        onKeyDown={handleKeyDown}
+        isDisabled={disabled}
+        placeholder={disabled ? "Waiting for the current answer…" : "Ask about your Notion or Jira content..."}
+        rows={1}
+        className="flex-1 self-center"
+        textAreaClassName="max-h-48 resize-none rounded-none border-0 bg-transparent px-0 py-1.5 shadow-none ring-0 focus:ring-0"
+      />
+      <Button
+        color="primary"
+        size="md"
+        isDisabled={disabled || !value.trim()}
+        onPress={submit}
+        iconLeading={ArrowUp}
+        className="shrink-0 self-end rounded-full"
+      />
     </div>
   );
 }

@@ -14,20 +14,41 @@ import { LandingPage } from "@/components/landing/LandingPage";
 export default function HomePage() {
   const { user, loading } = useAuth();
 
-  if (loading) {
-    return (
-      <div className="flex h-[calc(100vh-57px)] items-center justify-center">
-        <span className="h-6 w-6 animate-spin rounded-full border-2 border-ink-700 border-t-coral-500" />
-      </div>
-    );
-  }
+  // Wrapped in .cyber-full so the chat homepage (both its logged-out
+  // landing page and its logged-in chat UI) is the one place cyberpunk
+  // theme runs full animated glitch/motion effects — every other screen
+  // gets the calmer, static-only version of the same look.
+  return (
+    <div className="cyber-full">
+      {loading ? (
+        <div className="flex h-[calc(100vh-57px)] items-center justify-center">
+          <span className="h-6 w-6 animate-spin rounded-full border-2 border-ink-700 border-t-coral-500" />
+        </div>
+      ) : !user ? (
+        <LandingPage />
+      ) : (
+        <ChatPage />
+      )}
+    </div>
+  );
+}
 
-  if (!user) return <LandingPage />;
+const SUGGESTIONS = [
+  "What did we ship in the last sprint?",
+  "Summarize our current product roadmap",
+  "Are there any open blockers right now?",
+  "What's documented about our onboarding flow?",
+];
 
-  return <ChatPage />;
+function greeting(): string {
+  const hour = new Date().getHours();
+  if (hour < 12) return "Good morning";
+  if (hour < 18) return "Good afternoon";
+  return "Good evening";
 }
 
 function ChatPage() {
+  const { user } = useAuth();
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
@@ -105,42 +126,71 @@ function ChatPage() {
   const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
   const activeSources = isStreaming ? draftSources : lastAssistant?.sources ?? [];
   const activeCitedIndices = isStreaming ? null : lastAssistant?.citedIndices ?? null;
+  const isEmpty = messages.length === 0 && !isStreaming;
 
   return (
     <div className="flex h-[calc(100vh-57px)]">
       <SessionSidebar activeSessionId={sessionId} onSelect={handleSelectSession} onNewChat={handleNewChat} />
 
-      <div className="flex min-w-0 flex-1 flex-col">
-        <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-6">
-          {messages.length === 0 && !isStreaming && (
-            <div className="mx-auto mt-16 max-w-md text-center text-sm text-ink-500">
-              <p className="mb-1 text-base font-medium text-ink-200">Ask something about your synced content</p>
-              <p>Answers are grounded in what's been ingested from Notion and Jira, with citations you can verify.</p>
+      {isEmpty ? (
+        <div className="flex min-w-0 flex-1 flex-col items-center justify-center px-6">
+          <div className="w-full max-w-2xl">
+            <div className="mb-8 text-center">
+              <h1 className="cyber-glitch-text cyber-glitch-anim text-3xl font-semibold text-ink-50">
+                {greeting()}
+                {user?.display_name ? `, ${user.display_name.split(" ")[0]}` : ""}
+              </h1>
+              <p className="mt-2 text-ink-500">Ask anything about your synced Notion and Jira content.</p>
             </div>
-          )}
 
-          <div className="mx-auto max-w-3xl space-y-4">
-            {messages.map((m, i) => (
-              <MessageBubble key={i} message={m} />
-            ))}
-            {isStreaming && (
-              <MessageBubble
-                message={{ role: "assistant", content: draftAnswer || "…" }}
-                pending={draftAnswer.length === 0}
-              />
-            )}
+            <ChatInput disabled={isStreaming} onSend={handleSend} />
+
+            <div className="mt-4 flex flex-wrap justify-center gap-2">
+              {SUGGESTIONS.map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => handleSend(s)}
+                  className="cyber-chamfer-sm rounded-full border border-ink-800 bg-ink-900/60 px-3.5 py-2 text-sm text-ink-300 transition hover:border-ink-700 hover:bg-ink-800/60 hover:text-ink-100"
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+
             {error && (
-              <div className="rounded-lg border border-coral-800/60 bg-coral-950/40 px-3 py-2 text-sm text-coral-300">
+              <div className="mt-4 cyber-chamfer-sm rounded-lg border border-coral-800/60 bg-coral-950/40 px-3 py-2 text-sm text-coral-300">
                 {error}
               </div>
             )}
           </div>
         </div>
+      ) : (
+        <div className="flex min-w-0 flex-1 flex-col">
+          <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-6">
+            <div className="mx-auto max-w-3xl space-y-4">
+              {messages.map((m, i) => (
+                <MessageBubble key={i} message={m} />
+              ))}
+              {isStreaming && (
+                <MessageBubble
+                  message={{ role: "assistant", content: draftAnswer || "…" }}
+                  pending={draftAnswer.length === 0}
+                />
+              )}
+              {error && (
+                <div className="cyber-chamfer-sm rounded-lg border border-coral-800/60 bg-coral-950/40 px-3 py-2 text-sm text-coral-300">
+                  {error}
+                </div>
+              )}
+            </div>
+          </div>
 
-        <div className="mx-auto w-full max-w-3xl">
-          <ChatInput disabled={isStreaming} onSend={handleSend} />
+          <div className="mx-auto w-full max-w-3xl px-6 pb-6">
+            <ChatInput disabled={isStreaming} onSend={handleSend} />
+          </div>
         </div>
-      </div>
+      )}
 
       <SourcesPanel sources={activeSources} citedIndices={activeCitedIndices} isStreaming={isStreaming} />
     </div>
@@ -152,7 +202,7 @@ function MessageBubble({ message, pending }: { message: ChatMessage; pending?: b
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
       <div
-        className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${
+        className={`cyber-chamfer-sm max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${
           isUser ? "bg-coral-500 text-white" : "border border-ink-800 bg-ink-900/80 text-ink-100"
         }`}
       >

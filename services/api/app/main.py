@@ -7,6 +7,7 @@ from app.core.config import settings
 from app.core.telemetry import instrument_app, setup_telemetry
 from app.core.queue import get_queue_connection, close_queue_connection
 from app.core.db import init_engine, dispose_engine
+from app.core import auto_sync
 from app.api.routes import health, events, notion_oauth, jira_oauth, sync, query, sessions, connections, documents, auth, org, social_auth
 
 
@@ -15,7 +16,9 @@ async def lifespan(app: FastAPI):
     setup_telemetry()
     await init_engine()
     await get_queue_connection()
+    auto_sync.start()
     yield
+    await auto_sync.stop()
     await close_queue_connection()
     await dispose_engine()
 

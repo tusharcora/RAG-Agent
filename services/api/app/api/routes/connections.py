@@ -1,13 +1,17 @@
 import uuid
 from datetime import datetime
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.routes.sync import JIRA_SEARCH_URL_TMPL, NOTION_SEARCH_URL, _request
 from app.core.auth import AuthContext, require_auth, require_role
+from app.core.config import settings
 from app.core.db import get_session
+from app.integrations.jira_auth import ensure_fresh_token
 from app.models.rag import ConnectionMember, Document, OAuthConnection
 
 router = APIRouter(dependencies=[Depends(require_auth)])
@@ -147,3 +151,68 @@ async def get_members(
         select(ConnectionMember.user_id).where(ConnectionMember.connection_id == connection_id)
     )
     return [str(uid) for uid in result.scalars().all()]
+
+
+class ConnectionPreview(BaseModel):
+    visible_count: int
+    truncated: bool  # true = "at least this many" (an exact total wasn't available in one call)
+
+
+@router.get("/{connection_id}/preview")
+async def preview(
+    connection_id: uuid.UUID,
+    auth: AuthContext = Depends(require_auth),
+    session: AsyncSession = Depends(get_session),
+) -> ConnectionPreview:
+    """How many pages/issues this connection can currently see, in a single
+    cheap API call — no pagination loop, no event publishing. This exists
+    specifically to answer "why didn't my page sync?" *before* a real sync
+    runs: Notion/Jira only expose content that's been explicitly shared with
+    the integration, which is easy to get wrong during OAuth and has no
+    other visible signal until a sync silently comes back near-empty.
+
+    Deliberately a separate endpoint rather than a field on GET /connections
+    — that list is polled by the frontend, and folding a live Notion/Jira
+    API call into every poll would make an already-frequent request slow
+    and rate-limit-hungry for no benefit; the frontend fetches this lazily,
+    once, when a connection card first renders as connected.
+    """
+    connection = await _get_org_connection(session, connection_id, auth.org_id)
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        if connection.provider == "notion":
+            headers = {
+                "Authorization": f"Bearer {connection.access_token}",
+                "Notion-Version": settings.notion_api_version,
+                "Content-Type": "application/json",
+            }
+            # page_size capped well below max_pages_per_sync — this is a
+            # preview, not an enumeration. has_more=True only tells us "at
+            # least this many," never an exact total; Notion's /search does
+            # not return one.
+            resp = await _request(
+                client,
+                "POST",
+                NOTION_SEARCH_URL,
+                headers=headers,
+                json={"filter": {"property": "object", "value": "page"}, "page_size": 25},
+            )
+            data = resp.json()
+            results = data.get("results", [])
+            return ConnectionPreview(visible_count=len(results), truncated=bool(data.get("has_more")))
+
+        elif connection.provider == "jira":
+            access_token = await ensure_fresh_token(session, connection)
+            headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
+            url = JIRA_SEARCH_URL_TMPL.format(cloud_id=connection.workspace_id)
+            # maxResults=1 is enough — unlike Notion, Jira's /search always
+            # returns an exact "total" regardless of page size, so this is
+            # both cheap and exact (no has_more-style ambiguity).
+            resp = await _request(
+                client, "GET", url, headers=headers, params={"jql": "ORDER BY updated DESC", "maxResults": 1}
+            )
+            data = resp.json()
+            total = int(data.get("total", 0))
+            return ConnectionPreview(visible_count=total, truncated=False)
+
+        raise HTTPException(status_code=400, detail=f"Unknown provider: {connection.provider}")

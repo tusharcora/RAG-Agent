@@ -1,4 +1,5 @@
 import type {
+  ConnectionPreview,
   ConnectionStatus,
   DocumentDetail,
   DocumentListResponse,
@@ -101,6 +102,10 @@ export function syncProvider(provider: string) {
 
 export function setConnectionVisibility(connectionId: string, mode: "org_wide" | "restricted") {
   return patch<ConnectionStatus>(`/connections/${connectionId}/visibility`, { mode });
+}
+
+export function getConnectionPreview(connectionId: string) {
+  return get<ConnectionPreview>(`/connections/${connectionId}/preview`);
 }
 
 export function getConnectionMembers(connectionId: string) {

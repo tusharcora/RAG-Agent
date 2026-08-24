@@ -25,6 +25,14 @@ NOTION_TOKEN_URL = "https://api.notion.com/v1/oauth/token"
 
 @router.get("/authorize")
 async def authorize(auth: AuthContext = Depends(require_auth)) -> RedirectResponse:
+    # Without this check, an unset NOTION_CLIENT_ID silently produces a
+    # client_id=<empty> redirect to Notion's own authorize endpoint — the
+    # user lands on a confusing raw Notion API error instead of a clear
+    # message from us. Same guard pattern as social_auth.py's google/github
+    # /authorize.
+    if not settings.notion_client_id:
+        raise HTTPException(status_code=503, detail="Notion is not configured")
+
     # /authorize is hit directly by the frontend (unlike /callback, which is
     # hit by Notion's redirect and can't carry an app auth header), so it can
     # sit behind require_auth. Storing org_id as the CSRF state's Redis value

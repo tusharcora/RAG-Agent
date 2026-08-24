@@ -1,5 +1,5 @@
-import Link from "next/link";
 import { SourceIcon } from "@/components/icons/SourceIcon";
+import { Button } from "@/components/base/buttons/button";
 
 const FEATURES = [
   {
@@ -27,7 +27,7 @@ const FEATURES = [
 
 export function LandingPage() {
   return (
-    <div className="relative overflow-hidden">
+    <div className="cyber-grid-bg relative overflow-hidden">
       <div
         aria-hidden
         className="pointer-events-none absolute left-1/2 top-[-10rem] h-[36rem] w-[36rem] -translate-x-1/2 rounded-full bg-coral-500/20 blur-[120px]"
@@ -44,7 +44,7 @@ export function LandingPage() {
             For engineering & product teams
           </span>
 
-          <h1 className="text-4xl font-semibold leading-tight tracking-tight text-ink-50 sm:text-5xl">
+          <h1 className="cyber-glitch-text cyber-glitch-anim text-4xl font-semibold leading-tight tracking-tight text-ink-50 sm:text-5xl">
             Stop searching Notion.
             <br />
             <span className="bg-gradient-to-r from-coral-400 to-gold-400 bg-clip-text text-transparent">
@@ -58,18 +58,12 @@ export function LandingPage() {
           </p>
 
           <div className="mt-10 flex flex-wrap items-center justify-center gap-3 lg:justify-start">
-            <Link
-              href="/signup"
-              className="rounded-full bg-coral-500 px-6 py-2.5 text-sm font-semibold text-white shadow-glow transition hover:bg-coral-400"
-            >
+            <Button color="primary" size="xl" href="/signup" className="cyber-chamfer shadow-glow">
               Start free — no card required
-            </Link>
-            <Link
-              href="/login"
-              className="rounded-full border border-ink-700 bg-ink-900/60 px-6 py-2.5 text-sm font-semibold text-ink-200 transition hover:border-ink-600 hover:bg-ink-800/60"
-            >
+            </Button>
+            <Button color="secondary" size="xl" href="/login" className="cyber-chamfer">
               Log in
-            </Link>
+            </Button>
           </div>
           <p className="mt-4 text-xs text-ink-600">Free for your whole team, forever. Takes about 2 minutes to connect.</p>
         </div>
@@ -82,7 +76,7 @@ export function LandingPage() {
           {FEATURES.map((f) => (
             <div
               key={f.title}
-              className="rounded-2xl border border-ink-800 bg-ink-900/60 p-6 shadow-panel transition hover:border-ink-700"
+              className="cyber-chamfer rounded-2xl border border-ink-800 bg-ink-900/60 p-6 shadow-panel transition hover:border-ink-700"
             >
               <span
                 className={`mb-4 inline-flex h-9 w-9 items-center justify-center rounded-lg ${
@@ -99,18 +93,15 @@ export function LandingPage() {
       </section>
 
       <section className="relative mx-auto max-w-3xl px-6 pb-24 text-center">
-        <div className="rounded-2xl border border-ink-800 bg-gradient-to-br from-ink-900 to-ink-900/40 p-8 shadow-panel">
+        <div className="cyber-chamfer rounded-2xl border border-ink-800 bg-gradient-to-br from-ink-900 to-ink-900/40 p-8 shadow-panel">
           <h2 className="mb-2 text-lg font-semibold text-ink-100">Ready to stop searching?</h2>
           <p className="mb-6 text-sm text-ink-400">
             Create your organization, connect Notion or Jira, and ask your first question in under 2 minutes. Free —
             no card, no trial clock, ever.
           </p>
-          <Link
-            href="/signup"
-            className="inline-block rounded-full bg-coral-500 px-6 py-2.5 text-sm font-semibold text-white shadow-glow transition hover:bg-coral-400"
-          >
+          <Button color="primary" size="xl" href="/signup" className="cyber-chamfer shadow-glow">
             Create your organization
-          </Link>
+          </Button>
         </div>
       </section>
     </div>
@@ -126,12 +117,14 @@ export function LandingPage() {
  */
 function ChatPreview() {
   return (
-    <div className="relative mx-auto w-full max-w-md rounded-2xl border border-ink-800 bg-ink-900/80 shadow-panel">
+    <div className="cyber-chamfer relative mx-auto w-full max-w-md rounded-2xl border border-ink-800 bg-ink-900/80 shadow-panel">
       <div className="flex items-center gap-1.5 border-b border-ink-800 px-4 py-3">
         <span className="h-2.5 w-2.5 rounded-full bg-ink-700" />
         <span className="h-2.5 w-2.5 rounded-full bg-ink-700" />
         <span className="h-2.5 w-2.5 rounded-full bg-ink-700" />
-        <span className="ml-2 text-xs text-ink-500">Chat</span>
+        <span className="ml-2 text-xs text-ink-500">
+          <span className="cyber-terminal-prompt">&gt;</span>Chat
+        </span>
       </div>
 
       <div className="space-y-3 p-4">
@@ -143,6 +136,7 @@ function ChatPreview() {
           Rollout is staged in three phases, starting with internal accounts{" "}
           <Cite n={1} /> and expanding to enterprise customers once backend SAML support ships{" "}
           <Cite n={2} />. Target for phase one is end of next sprint.
+          <span className="cyber-cursor-blink" />
         </div>
       </div>
 

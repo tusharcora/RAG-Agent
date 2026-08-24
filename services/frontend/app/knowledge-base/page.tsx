@@ -1,13 +1,24 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { SearchLg } from "@untitledui/icons";
 import { getDocuments } from "@/lib/api";
 import { DocumentTable } from "@/components/knowledge-base/DocumentTable";
 import { DocumentDetailDrawer } from "@/components/knowledge-base/DocumentDetailDrawer";
 import { StatTile } from "@/components/StatTile";
+import { TableCard } from "@/components/application/table/table";
+import { Input } from "@/components/base/input/input";
+import { NativeSelect } from "@/components/base/select/select-native";
+import { Button } from "@/components/base/buttons/button";
 import type { DocumentSummary } from "@/lib/types";
 
 const PAGE_SIZE = 25;
+
+const SOURCE_OPTIONS = [
+  { label: "All sources", value: "" },
+  { label: "Notion", value: "notion" },
+  { label: "Jira", value: "jira" },
+];
 
 export default function KnowledgeBasePage() {
   const [documents, setDocuments] = useState<DocumentSummary[]>([]);
@@ -38,57 +49,63 @@ export default function KnowledgeBasePage() {
           <StatTile label="Documents" value={total} />
         </div>
 
-        <div className="mb-4 flex gap-2">
-          <input
-            value={search}
-            onChange={(e) => {
-              setOffset(0);
-              setSearch(e.target.value);
-            }}
-            placeholder="Search titles…"
-            className="w-64 rounded-xl border border-ink-700 bg-ink-950 px-3 py-1.5 text-sm text-ink-100 placeholder:text-ink-600 focus:border-coral-500 focus:outline-none"
+        <TableCard.Root className="flex min-h-0 flex-1 flex-col">
+          <TableCard.Header
+            title="Documents"
+            description="Click a row to inspect its chunks."
+            contentTrailing={
+              <div className="flex gap-2">
+                <Input
+                  icon={SearchLg}
+                  size="sm"
+                  placeholder="Search titles..."
+                  value={search}
+                  onChange={(v) => {
+                    setOffset(0);
+                    setSearch(v);
+                  }}
+                  wrapperClassName="w-56"
+                />
+                <NativeSelect
+                  size="sm"
+                  options={SOURCE_OPTIONS}
+                  value={source}
+                  onChange={(e) => {
+                    setOffset(0);
+                    setSource(e.target.value);
+                  }}
+                  className="w-36"
+                />
+              </div>
+            }
           />
-          <select
-            value={source}
-            onChange={(e) => {
-              setOffset(0);
-              setSource(e.target.value);
-            }}
-            className="rounded-xl border border-ink-700 bg-ink-950 px-3 py-1.5 text-sm text-ink-100 focus:border-coral-500 focus:outline-none"
-          >
-            <option value="">All sources</option>
-            <option value="notion">Notion</option>
-            <option value="jira">Jira</option>
-          </select>
-        </div>
-
-        <div className="flex-1 overflow-y-auto rounded-2xl border border-ink-800 bg-ink-900/40 p-2 shadow-panel">
-          <DocumentTable documents={documents} selectedId={selectedId} onSelect={setSelectedId} />
-        </div>
-
-        <div className="mt-3 flex items-center justify-between text-xs text-ink-500">
-          <span>
-            {total === 0 ? "0" : `${offset + 1}–${Math.min(offset + PAGE_SIZE, total)}`} of {total}
-          </span>
-          <div className="flex gap-2">
-            <button
-              type="button"
-              disabled={offset === 0}
-              onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
-              className="rounded-full border border-ink-700 px-3 py-1 transition hover:border-ink-600 disabled:opacity-40"
-            >
-              Prev
-            </button>
-            <button
-              type="button"
-              disabled={offset + PAGE_SIZE >= total}
-              onClick={() => setOffset(offset + PAGE_SIZE)}
-              className="rounded-full border border-ink-700 px-3 py-1 transition hover:border-ink-600 disabled:opacity-40"
-            >
-              Next
-            </button>
+          <div className="flex-1 overflow-y-auto">
+            <DocumentTable documents={documents} selectedId={selectedId} onSelect={setSelectedId} />
           </div>
-        </div>
+          <div className="flex items-center justify-between border-t border-secondary px-4 py-3 text-xs text-ink-500 md:px-6">
+            <span>
+              {total === 0 ? "0" : `${offset + 1}-${Math.min(offset + PAGE_SIZE, total)}`} of {total}
+            </span>
+            <div className="flex gap-2">
+              <Button
+                color="secondary"
+                size="sm"
+                isDisabled={offset === 0}
+                onPress={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
+              >
+                Previous
+              </Button>
+              <Button
+                color="secondary"
+                size="sm"
+                isDisabled={offset + PAGE_SIZE >= total}
+                onPress={() => setOffset(offset + PAGE_SIZE)}
+              >
+                Next
+              </Button>
+            </div>
+          </div>
+        </TableCard.Root>
       </div>
 
       {selectedId && <DocumentDetailDrawer documentId={selectedId} onClose={() => setSelectedId(null)} />}

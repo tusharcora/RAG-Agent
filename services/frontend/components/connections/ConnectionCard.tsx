@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import {
   API_BASE,
   getConnectionMembers,
+  getConnectionPreview,
   getOrgMembers,
   setConnectionMembers,
   setConnectionVisibility,
@@ -11,15 +12,34 @@ import {
 } from "@/lib/api";
 import { SourceIcon } from "@/components/icons/SourceIcon";
 import { useAuth } from "@/lib/auth-context";
-import type { ConnectionStatus, OrgMember } from "@/lib/types";
+import type { ConnectionPreview, ConnectionStatus, OrgMember } from "@/lib/types";
+import { Badge } from "@/components/base/badges/badges";
+import { Button } from "@/components/base/buttons/button";
 
 const LABELS: Record<string, string> = { notion: "Notion", jira: "Jira" };
 
 export function ConnectionCard({ status, onSynced }: { status: ConnectionStatus; onSynced: () => void }) {
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<string | null>(null);
+  const [preview, setPreview] = useState<ConnectionPreview | null>(null);
   const { user } = useAuth();
   const isAdmin = user?.role === "owner" || user?.role === "admin";
+
+  // Fetched once per connection, not on every connections-page poll — this
+  // hits Notion/Jira's live API directly (see connections.py's /preview
+  // docstring), so folding it into the existing 3s-for-30s poll would be
+  // slow and rate-limit-hungry for no benefit. status.id is a stable
+  // primitive, so this effect only re-runs when the connection itself
+  // changes, not on every poll re-render.
+  useEffect(() => {
+    if (!status.connected || !status.id) {
+      setPreview(null);
+      return;
+    }
+    getConnectionPreview(status.id)
+      .then(setPreview)
+      .catch(() => setPreview(null));
+  }, [status.connected, status.id]);
 
   const handleSync = async () => {
     setSyncing(true);
@@ -36,19 +56,15 @@ export function ConnectionCard({ status, onSynced }: { status: ConnectionStatus;
   };
 
   return (
-    <div className="rounded-2xl border border-ink-800 bg-ink-900/60 p-5 shadow-panel transition hover:border-ink-700">
+    <div className="cyber-chamfer rounded-2xl border border-ink-800 bg-ink-900/60 p-5 shadow-panel transition hover:border-ink-700">
       <div className="mb-4 flex items-center gap-2.5">
         <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-ink-800 text-ink-200">
           <SourceIcon source={status.provider} className="h-4.5 w-4.5" />
         </span>
         <h2 className="text-base font-semibold text-ink-100">{LABELS[status.provider] ?? status.provider}</h2>
-        <span
-          className={`ml-auto rounded-full px-2 py-0.5 text-xs font-medium ${
-            status.connected ? "bg-emerald-500/15 text-emerald-300" : "bg-ink-700/50 text-ink-400"
-          }`}
-        >
+        <Badge type="pill-color" color={status.connected ? "success" : "gray"} size="sm" className="ml-auto">
           {status.connected ? "Connected" : "Not connected"}
-        </span>
+        </Badge>
       </div>
 
       {status.connected ? (
@@ -56,6 +72,16 @@ export function ConnectionCard({ status, onSynced }: { status: ConnectionStatus;
           <Row label="Workspace" value={status.workspace_name ?? "—"} />
           <Row label="Last synced" value={formatTimestamp(status.last_synced_at)} />
           <Row label="Visibility" value={status.visibility_mode === "restricted" ? "Restricted" : "Org-wide"} />
+          {preview && (
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-ink-500">Visible to integration</span>
+              <Badge type="pill-color" color={preview.visible_count === 0 ? "warning" : "gray"} size="sm">
+                {preview.visible_count === 0
+                  ? "0 pages shared — check permissions"
+                  : `${preview.visible_count}${preview.truncated ? "+" : ""} page${preview.visible_count === 1 ? "" : "s"}`}
+              </Badge>
+            </div>
+          )}
         </div>
       ) : (
         <p className="text-sm text-ink-500">Connect to start syncing content for retrieval.</p>
@@ -63,21 +89,13 @@ export function ConnectionCard({ status, onSynced }: { status: ConnectionStatus;
 
       <div className="mt-4 flex flex-wrap items-center gap-2">
         {status.connected ? (
-          <button
-            type="button"
-            onClick={handleSync}
-            disabled={syncing}
-            className="rounded-full bg-coral-500 px-3.5 py-1.5 text-sm font-medium text-white transition hover:bg-coral-400 disabled:opacity-50"
-          >
-            {syncing ? "Syncing…" : "Sync now"}
-          </button>
+          <Button color="secondary" size="sm" isLoading={syncing} onPress={handleSync}>
+            Sync now
+          </Button>
         ) : (
-          <a
-            href={`${API_BASE}/oauth/${status.provider}/authorize`}
-            className="inline-block rounded-full bg-gradient-to-r from-coral-500 to-gold-400 px-3.5 py-1.5 text-sm font-medium text-ink-950 transition hover:brightness-110"
-          >
+          <Button color="primary" size="sm" href={`${API_BASE}/oauth/${status.provider}/authorize`}>
             Connect
-          </a>
+          </Button>
         )}
       </div>
       {syncResult && <p className="mt-2 text-xs text-ink-500">{syncResult}</p>}
@@ -134,13 +152,9 @@ function AccessControl({ connectionId, status }: { connectionId: string; status:
 
   return (
     <div className="mt-4 border-t border-ink-800 pt-4">
-      <button
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
-        className="text-xs font-medium text-ink-400 transition hover:text-coral-300"
-      >
+      <Button color="link-color" size="sm" onPress={() => setExpanded((v) => !v)}>
         {expanded ? "Hide access settings" : "Manage access"}
-      </button>
+      </Button>
 
       {expanded && (
         <div className="mt-3 space-y-3">
@@ -183,14 +197,9 @@ function AccessControl({ connectionId, status }: { connectionId: string; status:
                 ))}
                 {members.length === 0 && <p className="text-xs text-ink-600">No org members found.</p>}
               </div>
-              <button
-                type="button"
-                onClick={saveMembers}
-                disabled={saving}
-                className="rounded-full bg-ink-700 px-2.5 py-1 text-xs font-medium text-ink-100 transition hover:bg-ink-600 disabled:opacity-50"
-              >
+              <Button color="secondary" size="sm" isLoading={saving} onPress={saveMembers}>
                 Save access list
-              </button>
+              </Button>
             </div>
           )}
         </div>

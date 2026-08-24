@@ -55,15 +55,12 @@ async def _get_connection(session: AsyncSession, provider: str, org_id) -> OAuth
     return connection
 
 
-@router.post("/notion", dependencies=[Depends(rate_limiter("sync_notion", settings.rate_limit_sync_per_minute))])
-async def sync_notion(
-    auth: AuthContext = Depends(require_auth_or_service_token), session: AsyncSession = Depends(get_session)
-) -> dict:
+async def sync_notion_connection(session: AsyncSession, connection: OAuthConnection) -> dict:
     """Enumerates all pages via Notion's /search and publishes one
     rag.notion_page_updated event per page — no embedding work happens here,
-    it's all handled by the worker off the queue."""
-    connection = await _get_connection(session, "notion", auth.org_id)
-
+    it's all handled by the worker off the queue. Shared by the /notion route
+    (single connection, resolved from the caller's auth) and auto_sync.py's
+    periodic scheduler (every connection, no caller/auth involved)."""
     published = 0
     truncated = False
     cursor: str | None = None
@@ -110,13 +107,18 @@ async def sync_notion(
     return {"published": published, "truncated": truncated}
 
 
-@router.post("/jira", dependencies=[Depends(rate_limiter("sync_jira", settings.rate_limit_sync_per_minute))])
-async def sync_jira(
+@router.post("/notion", dependencies=[Depends(rate_limiter("sync_notion", settings.rate_limit_sync_per_minute))])
+async def sync_notion(
     auth: AuthContext = Depends(require_auth_or_service_token), session: AsyncSession = Depends(get_session)
 ) -> dict:
+    connection = await _get_connection(session, "notion", auth.org_id)
+    return await sync_notion_connection(session, connection)
+
+
+async def sync_jira_connection(session: AsyncSession, connection: OAuthConnection) -> dict:
     """Enumerates issues via Jira's /search (JQL) and publishes one
-    rag.jira_issue_updated event per issue."""
-    connection = await _get_connection(session, "jira", auth.org_id)
+    rag.jira_issue_updated event per issue. Shared by the /jira route and
+    auto_sync.py's periodic scheduler — see sync_notion_connection above."""
     access_token = await ensure_fresh_token(session, connection)
 
     published = 0
@@ -159,3 +161,11 @@ async def sync_jira(
 
     logger.info("Jira sync published=%d truncated=%s", published, truncated)
     return {"published": published, "truncated": truncated}
+
+
+@router.post("/jira", dependencies=[Depends(rate_limiter("sync_jira", settings.rate_limit_sync_per_minute))])
+async def sync_jira(
+    auth: AuthContext = Depends(require_auth_or_service_token), session: AsyncSession = Depends(get_session)
+) -> dict:
+    connection = await _get_connection(session, "jira", auth.org_id)
+    return await sync_jira_connection(session, connection)

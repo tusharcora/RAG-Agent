@@ -1,0 +1,99 @@
+/*
+ * Overrides layered on top of Untitled UI theme.css (imported before this file).
+ *
+ * theme.css semantic tokens (color-bg-x, color-text-x, color-fg-x,
+ * color-border-x, etc.) are all built from two raw scales: the color-brand
+ * scale (the single accent) and Tailwind default neutral/white (theme.css
+ * never redefines those, it inherits Tailwind v4 defaults, and the default
+ * neutral 950 is already almost identical to our previous ink 950, so no
+ * override is needed there). Overriding just the color-brand swatches here
+ * means every Untitled UI component, which all reference the brand color
+ * indirectly through the semantic layer, picks up the coral accent
+ * automatically with zero per-component edits.
+ *
+ * The gold, ink, and status color scales below are additive: they do not
+ * exist in the Untitled UI token system at all, so defining them here just
+ * makes bg-gold-400 / text-ink-300 / etc. keep working exactly as before
+ * for hand-written markup that is not a swapped-in Untitled UI component.
+ *
+ * NOTE ON THIS FILE SPECIFICALLY: keep comments plain ASCII, no
+ * apostrophes, no dashes typed twice in a row, and no quote marks of
+ * either kind. Any of those inside a comment in an imported CSS file (this
+ * file is imported from app globals.css, not the entry file itself)
+ * crashes the Tailwind v4 postcss parser with a confusing
+ * unknown-utility-class error that has nothing to do with the actual
+ * cause. Confirmed by bisection, not a guess: a literal double-hyphen
+ * sequence typed inside a comment block is enough to trigger it on its
+ * own, even with no quote or dash-glyph characters anywhere in the file.
+ */
+
+@theme {
+    /* theme.css font-body and font-display already fall back to the Inter
+       font variable, but our own body rule in globals.css still uses the
+       font-sans utility class, a different, Tailwind-native namespace from
+       Untitled UI own font-body token, so map it too so it does not
+       silently fall back to the Tailwind default stack. */
+    --font-sans: var(--font-inter, "Inter"), -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+
+    --color-brand-50: #fef2f2;
+    --color-brand-100: #fde3e3;
+    --color-brand-200: #fbc8c9;
+    --color-brand-300: #f79fa1;
+    --color-brand-400: #f16d70;
+    --color-brand-500: #e8464a;
+    --color-brand-600: #cf3236;
+    --color-brand-700: #ad272a;
+    --color-brand-800: #8c2225;
+    --color-brand-900: #742224;
+    --color-brand-950: #3f0e10;
+
+    --color-gold-50: #fffbeb;
+    --color-gold-100: #fef2c6;
+    --color-gold-200: #fde48a;
+    --color-gold-300: #fbd04e;
+    --color-gold-400: #f9bb28;
+    --color-gold-500: #f0a012;
+    --color-gold-600: #d17d0d;
+    --color-gold-700: #ad5c0f;
+    --color-gold-800: #8c4813;
+    --color-gold-900: #743c14;
+
+    --color-ink-950: #0a0a0d;
+    --color-ink-900: #131316;
+    --color-ink-850: #18181c;
+    --color-ink-800: #202024;
+    --color-ink-700: #2b2b31;
+    --color-ink-600: #3c3c44;
+    --color-ink-500: #5c5c66;
+    --color-ink-400: #85858f;
+    --color-ink-300: #a9a9b3;
+    --color-ink-200: #c8c8d1;
+    --color-ink-100: #e6e6ea;
+    --color-ink-50: #f6f6f8;
+
+    --color-status-received: #85858f;
+    --color-status-processing: #f9bb28;
+    --color-status-succeeded: #34d399;
+    --color-status-failed: #f16d70;
+    --color-status-dead_lettered: #e8464a;
+
+    /* coral is an alias of brand: several hand-written components
+       reference bg-coral-500 / text-coral-400 / etc expecting the accent
+       color, but the accent scale is actually named color-brand here, a
+       different Tailwind namespace, so those coral classes generated no
+       CSS at all until this alias was added. */
+    --color-coral-50: var(--color-brand-50);
+    --color-coral-100: var(--color-brand-100);
+    --color-coral-200: var(--color-brand-200);
+    --color-coral-300: var(--color-brand-300);
+    --color-coral-400: var(--color-brand-400);
+    --color-coral-500: var(--color-brand-500);
+    --color-coral-600: var(--color-brand-600);
+    --color-coral-700: var(--color-brand-700);
+    --color-coral-800: var(--color-brand-800);
+    --color-coral-900: var(--color-brand-900);
+    --color-coral-950: var(--color-brand-950);
+
+    --shadow-panel: 0 1px 2px 0 rgb(0 0 0 / 0.4), 0 0 0 1px rgb(255 255 255 / 0.04);
+    --shadow-glow: 0 0 40px -8px rgb(232 70 74 / 0.35);
+}
