@@ -50,6 +50,11 @@ export interface OrgMember {
   role: "owner" | "admin" | "member";
 }
 
+export interface ConnectionPreview {
+  visible_count: number;
+  truncated: boolean;
+}
+
 export interface DocumentSummary {
   id: string;
   source: string;
