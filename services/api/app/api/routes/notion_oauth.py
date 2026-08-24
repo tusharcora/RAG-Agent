@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import AuthContext, require_auth
 from app.core.config import settings
+from app.core.crypto import encrypt_token
 from app.core.db import get_session
 from app.core.redis import get_redis
 from app.models.rag import OAuthConnection
@@ -87,7 +88,7 @@ async def callback(
 
     connection.workspace_id = data.get("workspace_id", "")
     connection.workspace_name = data.get("workspace_name") or "Notion workspace"
-    connection.access_token = data["access_token"]
+    connection.access_token = encrypt_token(data["access_token"])
     connection.bot_id = data.get("bot_id")
     connection.refresh_token = None  # Notion tokens don't expire
     connection.expires_at = None

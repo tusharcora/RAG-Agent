@@ -1,13 +1,16 @@
 import type {
   ConnectionPreview,
   ConnectionStatus,
+  DlqEvent,
   DocumentDetail,
   DocumentListResponse,
+  DocumentSummary,
   EventLogEntry,
   MeResponse,
   OrgMember,
   SessionDetail,
   SessionSummary,
+  VoyageUsage,
 } from "./types";
 
 export const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -108,6 +111,10 @@ export function getConnectionPreview(connectionId: string) {
   return get<ConnectionPreview>(`/connections/${connectionId}/preview`);
 }
 
+export function getVoyageUsage() {
+  return get<VoyageUsage>("/usage/voyage");
+}
+
 export function getConnectionMembers(connectionId: string) {
   return get<string[]>(`/connections/${connectionId}/members`);
 }
@@ -129,6 +136,10 @@ export function getDocument(id: string) {
   return get<DocumentDetail>(`/documents/${id}`);
 }
 
+export function setDocumentExcluded(documentId: string, excluded: boolean) {
+  return patch<DocumentSummary>(`/documents/${documentId}/exclude`, { excluded });
+}
+
 export function getEvents(params: { limit?: number; status?: string; routingKey?: string }) {
   const qs = new URLSearchParams();
   qs.set("limit", String(params.limit ?? 50));
@@ -137,10 +148,25 @@ export function getEvents(params: { limit?: number; status?: string; routingKey?
   return get<EventLogEntry[]>(`/events/recent?${qs.toString()}`);
 }
 
-export function getSessions() {
-  return get<SessionSummary[]>("/sessions?limit=30");
+export function getDlqEvents() {
+  return get<DlqEvent[]>("/dlq");
+}
+
+export function redriveDlqEvent(id: string) {
+  return post<{ event_log_id: string }>(`/dlq/${id}/redrive`);
+}
+
+export function getSessions(search?: string) {
+  const qs = new URLSearchParams();
+  qs.set("limit", "30");
+  if (search) qs.set("search", search);
+  return get<SessionSummary[]>(`/sessions?${qs.toString()}`);
 }
 
 export function getSession(id: string) {
   return get<SessionDetail>(`/sessions/${id}`);
+}
+
+export function setMessageFeedback(sessionId: string, messageId: string, feedback: "up" | "down" | null) {
+  return post<void>(`/sessions/${sessionId}/messages/${messageId}/feedback`, { feedback });
 }

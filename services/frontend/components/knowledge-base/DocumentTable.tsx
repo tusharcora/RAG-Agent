@@ -40,7 +40,16 @@ export function DocumentTable({
       <Table.Body items={documents}>
         {(doc) => (
           <Table.Row id={doc.id}>
-            <Table.Cell className="max-w-xs truncate font-medium text-secondary">{doc.title}</Table.Cell>
+            <Table.Cell className="max-w-xs truncate font-medium text-secondary">
+              <span className="flex items-center gap-1.5">
+                <span className="truncate">{doc.title}</span>
+                {doc.excluded_from_retrieval && (
+                  <Badge type="pill-color" color="warning" size="sm" className="shrink-0">
+                    Excluded
+                  </Badge>
+                )}
+              </span>
+            </Table.Cell>
             <Table.Cell>
               <span className="flex items-center gap-1.5 whitespace-nowrap">
                 <SourceIcon source={doc.source} className="h-3.5 w-3.5" />

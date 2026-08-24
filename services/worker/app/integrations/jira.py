@@ -2,9 +2,11 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 import httpx
+from cryptography.fernet import InvalidToken
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from app.core.config import settings
+from app.core.crypto import decrypt_token, encrypt_token
 from app.core.db import get_session
 from app.models.rag import OAuthConnection
 
@@ -60,12 +62,29 @@ async def _ensure_fresh_token(connection: OAuthConnection) -> str:
     refresh_token grant if expired or about to expire, persisting the
     rotated tokens back to oauth_connections. Without this, Jira ingestion
     silently starts failing about an hour after connecting."""
+    # connection.access_token/refresh_token are ciphertext at rest (see
+    # app/core/crypto.py). A row written before encryption landed (or otherwise
+    # corrupted) raises InvalidToken here — this can't return an HTTP response
+    # (worker, not the api), so log clearly and let it propagate: main.py's
+    # handle_message treats it like any other handler failure (retry, then
+    # dead-letter after max_retries).
+    try:
+        access_token = decrypt_token(connection.access_token)
+        refresh_token = decrypt_token(connection.refresh_token)
+    except InvalidToken:
+        logger.error(
+            "connection_id=%s has undecryptable stored credentials (pre-encryption plaintext, "
+            "or corrupted) — reconnect required",
+            connection.id,
+        )
+        raise
+
     if connection.expires_at is None:
-        return connection.access_token
+        return access_token
 
     now = datetime.now(timezone.utc)
     if connection.expires_at > now + timedelta(seconds=60):
-        return connection.access_token
+        return access_token
 
     logger.info("Refreshing Jira access token for connection %s", connection.id)
     async with httpx.AsyncClient(timeout=30) as client:
@@ -75,25 +94,28 @@ async def _ensure_fresh_token(connection: OAuthConnection) -> str:
                 "grant_type": "refresh_token",
                 "client_id": settings.jira_client_id,
                 "client_secret": settings.jira_client_secret,
-                "refresh_token": connection.refresh_token,
+                "refresh_token": refresh_token,
             },
         )
         resp.raise_for_status()
         data = resp.json()
 
     new_access_token = data["access_token"]
-    new_refresh_token = data.get("refresh_token", connection.refresh_token)  # Atlassian rotates refresh tokens
+    new_refresh_token = data.get("refresh_token", refresh_token)  # Atlassian rotates refresh tokens
     new_expires_at = now + timedelta(seconds=data.get("expires_in", 3600))
 
     async with get_session() as session:
         db_connection = await session.get(OAuthConnection, connection.id)
-        db_connection.access_token = new_access_token
-        db_connection.refresh_token = new_refresh_token
+        db_connection.access_token = encrypt_token(new_access_token)
+        db_connection.refresh_token = encrypt_token(new_refresh_token)
         db_connection.expires_at = new_expires_at
         await session.commit()
 
-    connection.access_token = new_access_token
-    connection.refresh_token = new_refresh_token
+    # Keep the in-memory connection's fields ciphertext, matching the DB — every
+    # call into this function decrypts them fresh at the top, so a stray plaintext
+    # value here would only be safe until the *next* call re-decrypts it.
+    connection.access_token = encrypt_token(new_access_token)
+    connection.refresh_token = encrypt_token(new_refresh_token)
     connection.expires_at = new_expires_at
     return new_access_token
 
