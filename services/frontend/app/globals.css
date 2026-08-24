@@ -2,6 +2,7 @@
 @import "../styles/theme.css";
 @import "../styles/typography.css";
 @import "../styles/brand.css";
+@import "../styles/cyberpunk.css";
 
 @plugin "@tailwindcss/typography";
 @plugin "tailwindcss-react-aria-components";

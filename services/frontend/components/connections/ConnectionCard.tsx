@@ -56,7 +56,7 @@ export function ConnectionCard({ status, onSynced }: { status: ConnectionStatus;
   };
 
   return (
-    <div className="rounded-2xl border border-ink-800 bg-ink-900/60 p-5 shadow-panel transition hover:border-ink-700">
+    <div className="cyber-chamfer rounded-2xl border border-ink-800 bg-ink-900/60 p-5 shadow-panel transition hover:border-ink-700">
       <div className="mb-4 flex items-center gap-2.5">
         <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-ink-800 text-ink-200">
           <SourceIcon source={status.provider} className="h-4.5 w-4.5" />

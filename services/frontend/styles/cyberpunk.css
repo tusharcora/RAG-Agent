@@ -1,0 +1,269 @@
+/*
+ * Cyberpunk/Glitch theme. Imported last from app globals.css so its
+ * .theme-cyberpunk block wins the cascade over theme.css dark-mode
+ * block for every token both define (same layer, equal specificity,
+ * source order decides).
+
+ * Most of the token overrides below feed straight into Untitled UI kit
+ * components (Button, Input, Badge, Avatar, Table) through the same
+ * semantic-token indirection that theme.css dark-mode block already
+ * uses, and into hand-authored product code through the ink/gold/coral
+ * scales defined in brand.css. Redefining roughly 40 custom properties
+ * here repaints the whole app with no per-component edits, the same
+ * trick dark-mode already relies on.
+ */
+
+@theme {
+    --font-display: var(--font-orbitron, Orbitron), sans-serif;
+    --font-body: var(--font-jetbrains-mono, "JetBrains Mono"), monospace;
+    --font-mono: var(--font-jetbrains-mono, "JetBrains Mono"), monospace;
+    --font-sans: var(--font-jetbrains-mono, "JetBrains Mono"), monospace;
+    --font-terminal: var(--font-share-tech-mono, "Share Tech Mono"), monospace;
+}
+
+@layer base {
+    .theme-cyberpunk {
+        /* RAW ACCENT SCALE (drives brand-*, coral-*, focus rings, borders,
+           text-brand-*, decorative blobs, all chained through var()
+           references already set up by theme.css and brand.css) */
+        --color-brand-50: #eafff5;
+        --color-brand-100: #c3ffe4;
+        --color-brand-200: #8dffce;
+        --color-brand-300: #4dffb0;
+        --color-brand-400: #1aff97;
+        --color-brand-500: #00ff88;
+        --color-brand-600: #00cc6d;
+        --color-brand-700: #009954;
+        --color-brand-800: #00663a;
+        --color-brand-900: #004d2c;
+        --color-brand-950: #002616;
+
+        --color-coral-50: #eafff5;
+        --color-coral-100: #c3ffe4;
+        --color-coral-200: #8dffce;
+        --color-coral-300: #4dffb0;
+        --color-coral-400: #1aff97;
+        --color-coral-500: #00ff88;
+        --color-coral-600: #00cc6d;
+        --color-coral-700: #009954;
+        --color-coral-800: #00663a;
+        --color-coral-900: #004d2c;
+        --color-coral-950: #002616;
+
+        /* Secondary accent scale (drives gold-*, the hand-authored
+           secondary color used for citation chips and accents). */
+        --color-gold-50: #fff0ff;
+        --color-gold-100: #ffd6ff;
+        --color-gold-200: #ffadff;
+        --color-gold-300: #ff85ff;
+        --color-gold-400: #ff5cff;
+        --color-gold-500: #ff00ff;
+        --color-gold-600: #cc00cc;
+        --color-gold-700: #990099;
+        --color-gold-800: #660066;
+        --color-gold-900: #4d004d;
+
+        /* Void black to high-contrast off-white scale, used directly by
+           hand-authored bg-ink-x / text-ink-x / border-ink-x classes
+           across most product components. */
+        --color-ink-950: #05050a;
+        --color-ink-900: #0a0a12;
+        --color-ink-850: #0d0d18;
+        --color-ink-800: #12121e;
+        --color-ink-700: #1a1a2a;
+        --color-ink-600: #26263c;
+        --color-ink-500: #3d3d5c;
+        --color-ink-400: #6b6b8a;
+        --color-ink-300: #9a9ab5;
+        --color-ink-200: #c4c4d8;
+        --color-ink-100: #e8e8f5;
+        --color-ink-50: #f5f5ff;
+
+        --color-status-received: #6b6b8a;
+        --color-status-processing: #ff00ff;
+        --color-status-succeeded: #00ff88;
+        --color-status-failed: #ff3366;
+        --color-status-dead_lettered: #ff3366;
+
+        /* Untitled UI kit semantic tokens, neutral leg (not derived from
+           brand, so these need direct overrides to reskin Input/Button
+           secondary/Table backgrounds, borders, and body text). */
+        --color-bg-primary: #0a0a0f;
+        --color-bg-secondary: #12121a;
+        --color-bg-tertiary: #1c1c2e;
+        --color-bg-quaternary: #26263c;
+        --color-bg-primary_hover: #12121a;
+        --color-bg-secondary_hover: #1c1c2e;
+        --color-bg-overlay: #05050a;
+        --color-bg-primary_alt: #0a0a0f;
+        --color-bg-secondary_alt: #0a0a0f;
+
+        --color-text-primary: #e8e8f5;
+        --color-text-secondary: #b8b8d0;
+        --color-text-tertiary: #8a8aa8;
+        --color-text-quaternary: #6b6b8a;
+        --color-text-placeholder: #55556e;
+
+        --color-border-primary: #2a2a3a;
+        --color-border-secondary: #1e1e2e;
+        --color-border-tertiary: #1a1a2a;
+
+        --color-fg-primary: #e8e8f5;
+        --color-fg-secondary: #b8b8d0;
+        --color-fg-tertiary: #8a8aa8;
+        --color-fg-quaternary: #6b6b8a;
+        --color-fg-quaternary_hover: #8a8aa8;
+
+        --color-focus-ring: #00ff88;
+
+        /* Solid brand-fill buttons hardcode white text (not a token, see
+           components/base/buttons/button.tsx), so the fill itself has to
+           stay dark enough for white text to pass contrast rather than
+           using the vivid #00ff88 signature accent directly here. */
+        --color-bg-brand-solid: #0d7a4f;
+        --color-bg-brand-solid_hover: #0a5c3c;
+
+        /* Same reasoning for solid destructive buttons. */
+        --color-bg-error-solid: #b3001f;
+        --color-bg-error-solid_hover: #8f0019;
+        --color-text-error-primary: #ff3366;
+        --color-text-error-primary_hover: #ff6688;
+        --color-border-error: #ff3366;
+        --color-border-error_subtle: #992244;
+        --color-fg-error-primary: #ff3366;
+        --color-fg-error-secondary: #ff6688;
+        --color-bg-error-primary: #2a0510;
+        --color-bg-error-secondary: #4d0a1c;
+
+        --color-text-success-primary: #00ff88;
+        --color-fg-success-primary: #00ff88;
+        --color-text-warning-primary: #ffcc00;
+        --color-fg-warning-primary: #ffcc00;
+
+        --shadow-panel: 0 1px 2px 0 rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(0, 255, 136, 0.12);
+        --shadow-glow: 0 0 40px -6px rgba(0, 255, 136, 0.45), 0 0 12px rgba(0, 255, 136, 0.25);
+    }
+}
+
+/* EFFECT UTILITIES
+   Plain (unlayered) rules, so they win over Tailwind utilities living in
+   @layer utilities regardless of source order. Applied unconditionally in
+   JSX; inert unless an ancestor carries .theme-cyberpunk. */
+
+.theme-cyberpunk .cyber-chamfer {
+    border-radius: 0 !important;
+    clip-path: polygon(10px 0, calc(100% - 10px) 0, 100% 10px, 100% calc(100% - 10px), calc(100% - 10px) 100%, 10px 100%, 0 calc(100% - 10px), 0 10px);
+}
+
+.theme-cyberpunk .cyber-chamfer-sm {
+    border-radius: 0 !important;
+    clip-path: polygon(6px 0, calc(100% - 6px) 0, 100% 6px, 100% calc(100% - 6px), calc(100% - 6px) 100%, 6px 100%, 0 calc(100% - 6px), 0 6px);
+}
+
+.theme-cyberpunk .cyber-glow-sm {
+    box-shadow: 0 0 3px #00ff88, 0 0 6px rgba(0, 255, 136, 0.3);
+}
+.theme-cyberpunk .cyber-glow {
+    box-shadow: 0 0 5px #00ff88, 0 0 10px rgba(0, 255, 136, 0.25);
+}
+.theme-cyberpunk .cyber-glow-lg {
+    box-shadow: 0 0 10px #00ff88, 0 0 20px rgba(0, 255, 136, 0.35), 0 0 40px rgba(0, 255, 136, 0.15);
+}
+.theme-cyberpunk .cyber-glow-secondary {
+    box-shadow: 0 0 5px #ff00ff, 0 0 15px rgba(255, 0, 255, 0.35);
+}
+
+.theme-cyberpunk .cyber-grid-bg {
+    background-image: linear-gradient(rgba(0, 255, 136, 0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(0, 255, 136, 0.06) 1px, transparent 1px);
+    background-size: 40px 40px;
+}
+
+/* Terminal prompt and blinking cursor render only under the cyberpunk
+   theme; the elements are always in the markup so no JS branching is
+   needed in the components that use them. */
+.cyber-terminal-prompt {
+    display: none;
+}
+.theme-cyberpunk .cyber-terminal-prompt {
+    display: inline;
+    font-family: var(--font-terminal);
+    color: #00ff88;
+    margin-right: 0.35em;
+}
+
+.cyber-cursor-blink {
+    display: none;
+}
+.theme-cyberpunk .cyber-cursor-blink {
+    display: inline-block;
+    width: 0.5em;
+    margin-left: 2px;
+    background: #00ff88;
+}
+@media (prefers-reduced-motion: no-preference) {
+    .theme-cyberpunk .cyber-full .cyber-cursor-blink {
+        animation: var(--animate-caret-blink);
+    }
+}
+
+/* Static chromatic aberration applies everywhere cyberpunk is active;
+   the looping glitch jump is reserved for .cyber-full (the chat
+   homepage) and only runs without a reduced-motion preference. */
+.theme-cyberpunk .cyber-glitch-text {
+    text-shadow: -1px 0 rgba(255, 0, 255, 0.7), 1px 0 rgba(0, 212, 255, 0.7);
+}
+@media (prefers-reduced-motion: no-preference) {
+    .theme-cyberpunk .cyber-full .cyber-glitch-anim {
+        animation: cyber-glitch 3s infinite;
+    }
+}
+@keyframes cyber-glitch {
+    0%,
+    100% {
+        transform: translate(0);
+        text-shadow: -2px 0 rgba(255, 0, 255, 0.8), 2px 0 rgba(0, 212, 255, 0.8);
+    }
+    20% {
+        transform: translate(-2px, 2px);
+    }
+    40% {
+        transform: translate(2px, -2px);
+    }
+    60% {
+        transform: translate(-1px, -1px);
+        text-shadow: 2px 0 rgba(255, 0, 255, 0.8), -2px 0 rgba(0, 212, 255, 0.8);
+    }
+    80% {
+        transform: translate(1px, 1px);
+    }
+}
+
+/* Headings pick up the display font plus the spec typography scale
+   automatically, no per-heading edits needed across the app. */
+.theme-cyberpunk h1,
+.theme-cyberpunk h2,
+.theme-cyberpunk h3 {
+    font-family: var(--font-display);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.theme-cyberpunk *:focus-visible {
+    box-shadow: 0 0 0 2px #0a0a0f, 0 0 8px 2px rgba(0, 255, 136, 0.6);
+}
+
+/* Whole-page scanline texture, the one signature effect that stays on
+   every screen regardless of the full-vs-restrained motion split (it is
+   a static texture, not an animation). */
+.theme-cyberpunk body {
+    position: relative;
+}
+.theme-cyberpunk body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    pointer-events: none;
+    opacity: 0.35;
+    background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0, 0, 0, 0.35) 2px, rgba(0, 0, 0, 0.35) 4px);
+}

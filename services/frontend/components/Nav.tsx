@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
 import { Avatar } from "@/components/base/avatar/avatar";
 import { Button } from "@/components/base/buttons/button";
+import { ThemeToggle } from "@/components/ThemeToggle";
 
 const LINKS = [
   { href: "/", label: "Chat" },
@@ -18,9 +19,9 @@ export default function Nav() {
   const { user, logout } = useAuth();
 
   return (
-    <nav className="flex items-center gap-1 border-b border-ink-800 bg-ink-950/90 px-4 py-3 backdrop-blur">
+    <nav className="cyber-glow-sm flex items-center gap-1 border-b border-ink-800 bg-ink-950/90 px-4 py-3 backdrop-blur">
       <Link href="/" className="mr-6 flex items-center gap-2">
-        <span className="flex h-6 w-6 items-center justify-center rounded-md bg-gradient-to-br from-coral-500 to-gold-400 text-[11px] font-bold text-ink-950">
+        <span className="cyber-chamfer-sm flex h-6 w-6 items-center justify-center rounded-md bg-gradient-to-br from-coral-500 to-gold-400 text-[11px] font-bold text-ink-950">
           R
         </span>
         <span className="text-sm font-semibold tracking-wide text-ink-100">RAG Knowledge Agent</span>
@@ -43,6 +44,7 @@ export default function Nav() {
         })}
 
       <div className="ml-auto flex items-center gap-3 text-sm">
+        <ThemeToggle />
         {user ? (
           <>
             <span className="hidden text-ink-400 sm:inline">

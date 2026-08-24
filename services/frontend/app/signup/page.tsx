@@ -64,7 +64,7 @@ function SignupForm() {
         aria-hidden
         className="pointer-events-none absolute left-1/2 top-1/4 h-96 w-96 -translate-x-1/2 rounded-full bg-gold-400/10 blur-[100px]"
       />
-      <div className="relative w-full max-w-sm rounded-2xl border border-ink-800 bg-ink-900/60 p-7 shadow-panel">
+      <div className="cyber-chamfer relative w-full max-w-sm rounded-2xl border border-ink-800 bg-ink-900/60 p-7 shadow-panel">
         <h1 className="mb-1 text-lg font-semibold text-ink-50">
           {inviteToken ? "Accept invite" : "Create your organization"}
         </h1>

@@ -42,7 +42,7 @@ export function DocumentDetailDrawer({ documentId, onClose }: { documentId: stri
             this document.
           </p>
           {detail.chunks.map((chunk) => (
-            <div key={chunk.id} className="rounded-xl border border-ink-800 bg-ink-950/60 p-3">
+            <div key={chunk.id} className="cyber-chamfer-sm rounded-xl border border-ink-800 bg-ink-950/60 p-3">
               <div className="mb-2 flex flex-wrap items-center gap-1.5">
                 <Badge type="color" color="gray" size="sm" className="font-mono">
                   #{chunk.chunk_index}
