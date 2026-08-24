@@ -1,6 +1,7 @@
 import type {
   ConnectionPreview,
   ConnectionStatus,
+  DlqEvent,
   DocumentDetail,
   DocumentListResponse,
   EventLogEntry,
@@ -135,6 +136,14 @@ export function getEvents(params: { limit?: number; status?: string; routingKey?
   if (params.status) qs.set("status", params.status);
   if (params.routingKey) qs.set("routing_key", params.routingKey);
   return get<EventLogEntry[]>(`/events/recent?${qs.toString()}`);
+}
+
+export function getDlqEvents() {
+  return get<DlqEvent[]>("/dlq");
+}
+
+export function redriveDlqEvent(id: string) {
+  return post<{ event_log_id: string }>(`/dlq/${id}/redrive`);
 }
 
 export function getSessions() {
