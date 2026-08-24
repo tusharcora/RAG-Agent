@@ -2,10 +2,12 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { LogOut01, Settings01, Zap } from "@untitledui/icons";
 import { useAuth } from "@/lib/auth-context";
+import { useTheme } from "@/lib/theme-context";
 import { Avatar } from "@/components/base/avatar/avatar";
 import { Button } from "@/components/base/buttons/button";
-import { ThemeToggle } from "@/components/ThemeToggle";
+import { Dropdown } from "@/components/base/dropdown/dropdown";
 
 const LINKS = [
   { href: "/", label: "Chat" },
@@ -17,6 +19,8 @@ const LINKS = [
 export default function Nav() {
   const pathname = usePathname();
   const { user, logout } = useAuth();
+  const { theme, setTheme } = useTheme();
+  const isCyberpunk = theme === "cyberpunk";
 
   return (
     <nav className="cyber-glow-sm flex items-center gap-1 border-b border-ink-800 bg-ink-950/90 px-4 py-3 backdrop-blur">
@@ -44,18 +48,46 @@ export default function Nav() {
         })}
 
       <div className="ml-auto flex items-center gap-3 text-sm">
-        <ThemeToggle />
         {user ? (
-          <>
-            <span className="hidden text-ink-400 sm:inline">
-              {user.display_name || user.email} <span className="text-ink-700">·</span>{" "}
-              <span className="capitalize text-gold-400">{user.role}</span>
-            </span>
-            <Avatar size="xs" initials={(user.display_name || user.email).slice(0, 1).toUpperCase()} />
-            <Button color="tertiary" size="sm" onPress={() => logout()}>
-              Log out
+          <Dropdown.Root>
+            <Button color="tertiary" size="sm" className="gap-2 pr-2">
+              <span className="hidden text-ink-400 sm:inline">
+                {user.display_name || user.email} <span className="text-ink-700">·</span>{" "}
+                <span className="capitalize text-gold-400">{user.role}</span>
+              </span>
+              <Avatar size="xs" initials={(user.display_name || user.email).slice(0, 1).toUpperCase()} />
             </Button>
-          </>
+
+            <Dropdown.Popover className="w-72">
+              <Dropdown.Menu>
+                <Dropdown.Section>
+                  <Dropdown.SectionHeader className="px-2.5 py-2">
+                    <p className="truncate text-sm font-semibold text-ink-100">{user.display_name || user.email}</p>
+                    <p className="truncate text-xs text-ink-500">{user.email}</p>
+                    <p className="mt-1 text-xs text-ink-500">
+                      <span className="capitalize text-gold-400">{user.role}</span>{" "}
+                      <span className="text-ink-700">·</span> {user.org_name}
+                    </p>
+                  </Dropdown.SectionHeader>
+                </Dropdown.Section>
+
+                <Dropdown.Separator />
+
+                <Dropdown.Item icon={Settings01} href="/settings">
+                  Settings
+                </Dropdown.Item>
+                <Dropdown.Item icon={Zap} onAction={() => setTheme(isCyberpunk ? "dark" : "cyberpunk")}>
+                  {isCyberpunk ? "Switch to standard theme" : "Switch to cyberpunk theme"}
+                </Dropdown.Item>
+
+                <Dropdown.Separator />
+
+                <Dropdown.Item icon={LogOut01} onAction={() => logout()}>
+                  Log out
+                </Dropdown.Item>
+              </Dropdown.Menu>
+            </Dropdown.Popover>
+          </Dropdown.Root>
         ) : (
           <>
             <Button color="tertiary" size="sm" href="/login">

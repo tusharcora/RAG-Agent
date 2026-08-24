@@ -38,6 +38,7 @@ export interface ConnectionStatus {
 export interface MeResponse {
   user_id: string;
   org_id: string;
+  org_name: string;
   role: "owner" | "admin" | "member";
   email: string;
   display_name: string | null;
