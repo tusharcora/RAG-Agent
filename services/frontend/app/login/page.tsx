@@ -5,6 +5,8 @@ import Link from "next/link";
 import { ApiError, login } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { SocialLoginButtons } from "@/components/auth/SocialLoginButtons";
+import { Input } from "@/components/base/input/input";
+import { Button } from "@/components/base/buttons/button";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
@@ -42,16 +44,19 @@ export default function LoginPage() {
         <p className="mb-6 text-sm text-ink-500">Log in to your organization's knowledge base.</p>
 
         <form onSubmit={handleSubmit} className="space-y-4">
-          <Field label="Email" type="email" value={email} onChange={setEmail} autoComplete="email" />
-          <Field label="Password" type="password" value={password} onChange={setPassword} autoComplete="current-password" />
+          <Input label="Email" type="email" value={email} onChange={setEmail} isRequired autoComplete="email" />
+          <Input
+            label="Password"
+            type="password"
+            value={password}
+            onChange={setPassword}
+            isRequired
+            autoComplete="current-password"
+          />
           {error && <p className="text-sm text-coral-400">{error}</p>}
-          <button
-            type="submit"
-            disabled={submitting}
-            className="w-full rounded-xl bg-coral-500 px-3 py-2.5 text-sm font-semibold text-white transition hover:bg-coral-400 disabled:opacity-50"
-          >
-            {submitting ? "Logging in…" : "Log in"}
-          </button>
+          <Button type="submit" isDisabled={submitting} isLoading={submitting} className="w-full" size="lg">
+            Log in
+          </Button>
         </form>
 
         {/* Social login slot — Google/GitHub OAuth buttons render here. */}
@@ -70,33 +75,5 @@ export default function LoginPage() {
         </p>
       </div>
     </div>
-  );
-}
-
-function Field({
-  label,
-  type,
-  value,
-  onChange,
-  autoComplete,
-}: {
-  label: string;
-  type: string;
-  value: string;
-  onChange: (v: string) => void;
-  autoComplete?: string;
-}) {
-  return (
-    <label className="block">
-      <span className="mb-1 block text-sm text-ink-400">{label}</span>
-      <input
-        type={type}
-        required
-        value={value}
-        autoComplete={autoComplete}
-        onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded-xl border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-ink-100 outline-none focus:border-coral-500"
-      />
-    </label>
   );
 }

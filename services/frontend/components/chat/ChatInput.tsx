@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, type KeyboardEvent } from "react";
+import { TextArea } from "@/components/base/textarea/textarea";
+import { Button } from "@/components/base/buttons/button";
 
 export function ChatInput({ disabled, onSend }: { disabled: boolean; onSend: (question: string) => void }) {
   const [value, setValue] = useState("");
@@ -22,23 +24,19 @@ export function ChatInput({ disabled, onSend }: { disabled: boolean; onSend: (qu
   return (
     <div className="border-t border-ink-800 bg-ink-900/40 p-3">
       <div className="flex items-end gap-2">
-        <textarea
+        <TextArea
           value={value}
-          onChange={(e) => setValue(e.target.value)}
+          onChange={setValue}
           onKeyDown={handleKeyDown}
-          disabled={disabled}
+          isDisabled={disabled}
           placeholder={disabled ? "Waiting for the current answer…" : "Ask about your Notion or Jira content…"}
           rows={1}
-          className="max-h-40 flex-1 resize-none rounded-xl border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-ink-100 placeholder:text-ink-600 focus:border-coral-500 focus:outline-none disabled:opacity-50"
+          className="flex-1"
+          textAreaClassName="max-h-40"
         />
-        <button
-          type="button"
-          onClick={submit}
-          disabled={disabled || !value.trim()}
-          className="rounded-xl bg-coral-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-coral-400 disabled:cursor-not-allowed disabled:opacity-40"
-        >
+        <Button color="primary" size="md" isDisabled={disabled || !value.trim()} onPress={submit}>
           Send
-        </button>
+        </Button>
       </div>
     </div>
   );

@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
+import { Avatar } from "@/components/base/avatar/avatar";
+import { Button } from "@/components/base/buttons/button";
 
 const LINKS = [
   { href: "/", label: "Chat" },
@@ -47,27 +49,19 @@ export default function Nav() {
               {user.display_name || user.email} <span className="text-ink-700">·</span>{" "}
               <span className="capitalize text-gold-400">{user.role}</span>
             </span>
-            <span className="flex h-7 w-7 items-center justify-center rounded-full bg-ink-800 text-xs font-semibold text-ink-200 ring-1 ring-inset ring-ink-700">
-              {(user.display_name || user.email).slice(0, 1).toUpperCase()}
-            </span>
-            <button
-              onClick={() => logout()}
-              className="rounded-full px-3 py-1.5 text-ink-400 transition hover:bg-ink-800/60 hover:text-ink-200"
-            >
+            <Avatar size="xs" initials={(user.display_name || user.email).slice(0, 1).toUpperCase()} />
+            <Button color="tertiary" size="sm" onPress={() => logout()}>
               Log out
-            </button>
+            </Button>
           </>
         ) : (
           <>
-            <Link href="/login" className="rounded-full px-3 py-1.5 text-ink-400 transition hover:bg-ink-800/60 hover:text-ink-200">
+            <Button color="tertiary" size="sm" href="/login">
               Log in
-            </Link>
-            <Link
-              href="/signup"
-              className="rounded-full bg-coral-500 px-3.5 py-1.5 font-medium text-white transition hover:bg-coral-400"
-            >
+            </Button>
+            <Button color="primary" size="sm" href="/signup">
               Sign up
-            </Link>
+            </Button>
           </>
         )}
       </div>

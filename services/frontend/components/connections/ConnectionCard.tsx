@@ -12,6 +12,8 @@ import {
 import { SourceIcon } from "@/components/icons/SourceIcon";
 import { useAuth } from "@/lib/auth-context";
 import type { ConnectionStatus, OrgMember } from "@/lib/types";
+import { Badge } from "@/components/base/badges/badges";
+import { Button } from "@/components/base/buttons/button";
 
 const LABELS: Record<string, string> = { notion: "Notion", jira: "Jira" };
 
@@ -42,13 +44,9 @@ export function ConnectionCard({ status, onSynced }: { status: ConnectionStatus;
           <SourceIcon source={status.provider} className="h-4.5 w-4.5" />
         </span>
         <h2 className="text-base font-semibold text-ink-100">{LABELS[status.provider] ?? status.provider}</h2>
-        <span
-          className={`ml-auto rounded-full px-2 py-0.5 text-xs font-medium ${
-            status.connected ? "bg-emerald-500/15 text-emerald-300" : "bg-ink-700/50 text-ink-400"
-          }`}
-        >
+        <Badge type="pill-color" color={status.connected ? "success" : "gray"} size="sm" className="ml-auto">
           {status.connected ? "Connected" : "Not connected"}
-        </span>
+        </Badge>
       </div>
 
       {status.connected ? (
@@ -63,21 +61,13 @@ export function ConnectionCard({ status, onSynced }: { status: ConnectionStatus;
 
       <div className="mt-4 flex flex-wrap items-center gap-2">
         {status.connected ? (
-          <button
-            type="button"
-            onClick={handleSync}
-            disabled={syncing}
-            className="rounded-full bg-coral-500 px-3.5 py-1.5 text-sm font-medium text-white transition hover:bg-coral-400 disabled:opacity-50"
-          >
-            {syncing ? "Syncing…" : "Sync now"}
-          </button>
+          <Button color="secondary" size="sm" isLoading={syncing} onPress={handleSync}>
+            Sync now
+          </Button>
         ) : (
-          <a
-            href={`${API_BASE}/oauth/${status.provider}/authorize`}
-            className="inline-block rounded-full bg-gradient-to-r from-coral-500 to-gold-400 px-3.5 py-1.5 text-sm font-medium text-ink-950 transition hover:brightness-110"
-          >
+          <Button color="primary" size="sm" href={`${API_BASE}/oauth/${status.provider}/authorize`}>
             Connect
-          </a>
+          </Button>
         )}
       </div>
       {syncResult && <p className="mt-2 text-xs text-ink-500">{syncResult}</p>}
@@ -134,13 +124,9 @@ function AccessControl({ connectionId, status }: { connectionId: string; status:
 
   return (
     <div className="mt-4 border-t border-ink-800 pt-4">
-      <button
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
-        className="text-xs font-medium text-ink-400 transition hover:text-coral-300"
-      >
+      <Button color="link-color" size="sm" onPress={() => setExpanded((v) => !v)}>
         {expanded ? "Hide access settings" : "Manage access"}
-      </button>
+      </Button>
 
       {expanded && (
         <div className="mt-3 space-y-3">
@@ -183,14 +169,9 @@ function AccessControl({ connectionId, status }: { connectionId: string; status:
                 ))}
                 {members.length === 0 && <p className="text-xs text-ink-600">No org members found.</p>}
               </div>
-              <button
-                type="button"
-                onClick={saveMembers}
-                disabled={saving}
-                className="rounded-full bg-ink-700 px-2.5 py-1 text-xs font-medium text-ink-100 transition hover:bg-ink-600 disabled:opacity-50"
-              >
+              <Button color="secondary" size="sm" isLoading={saving} onPress={saveMembers}>
                 Save access list
-              </button>
+              </Button>
             </div>
           )}
         </div>

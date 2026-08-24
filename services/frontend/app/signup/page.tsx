@@ -6,6 +6,8 @@ import { useSearchParams } from "next/navigation";
 import { ApiError, signup } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { SocialLoginButtons } from "@/components/auth/SocialLoginButtons";
+import { Input } from "@/components/base/input/input";
+import { Button } from "@/components/base/buttons/button";
 
 export default function SignupPage() {
   return (
@@ -71,18 +73,23 @@ function SignupForm() {
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-4">
-          <Field label="Email" type="email" value={email} onChange={setEmail} autoComplete="email" />
-          <Field label="Password" type="password" value={password} onChange={setPassword} autoComplete="new-password" />
-          <Field label="Display name (optional)" type="text" value={displayName} onChange={setDisplayName} required={false} />
-          {!inviteToken && <Field label="Organization name" type="text" value={orgName} onChange={setOrgName} />}
+          <Input label="Email" type="email" value={email} onChange={setEmail} isRequired autoComplete="email" />
+          <Input
+            label="Password"
+            type="password"
+            value={password}
+            onChange={setPassword}
+            isRequired
+            autoComplete="new-password"
+          />
+          <Input label="Display name (optional)" type="text" value={displayName} onChange={setDisplayName} />
+          {!inviteToken && (
+            <Input label="Organization name" type="text" value={orgName} onChange={setOrgName} isRequired />
+          )}
           {error && <p className="text-sm text-coral-400">{error}</p>}
-          <button
-            type="submit"
-            disabled={submitting}
-            className="w-full rounded-xl bg-coral-500 px-3 py-2.5 text-sm font-semibold text-white transition hover:bg-coral-400 disabled:opacity-50"
-          >
-            {submitting ? "Creating account…" : "Sign up"}
-          </button>
+          <Button type="submit" isDisabled={submitting} isLoading={submitting} className="w-full" size="lg">
+            Sign up
+          </Button>
         </form>
 
         {/* Social login slot — Google/GitHub OAuth buttons render here. */}
@@ -101,35 +108,5 @@ function SignupForm() {
         </p>
       </div>
     </div>
-  );
-}
-
-function Field({
-  label,
-  type,
-  value,
-  onChange,
-  autoComplete,
-  required = true,
-}: {
-  label: string;
-  type: string;
-  value: string;
-  onChange: (v: string) => void;
-  autoComplete?: string;
-  required?: boolean;
-}) {
-  return (
-    <label className="block">
-      <span className="mb-1 block text-sm text-ink-400">{label}</span>
-      <input
-        type={type}
-        required={required}
-        value={value}
-        autoComplete={autoComplete}
-        onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded-xl border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-ink-100 outline-none focus:border-coral-500"
-      />
-    </label>
   );
 }
