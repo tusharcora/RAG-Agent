@@ -1,7 +1,8 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { getSession } from "@/lib/api";
+import { ThumbsDown, ThumbsUp } from "@untitledui/icons";
+import { getSession, setMessageFeedback } from "@/lib/api";
 import { streamQuery } from "@/lib/sse";
 import { useAuth } from "@/lib/auth-context";
 import type { ChatMessage, Source } from "@/lib/types";
@@ -90,11 +91,11 @@ function ChatPage() {
         setDraftAnswer((prev) => prev + text);
         scrollToBottom();
       },
-      onDone: (sid, citedIndices, answer, truncated) => {
+      onDone: (sid, citedIndices, answer, truncated, messageId) => {
         setSessionId(sid);
         setMessages((prev) => [
           ...prev,
-          { role: "assistant", content: answer, sources: sourcesForThisTurn, citedIndices, truncated },
+          { id: messageId || undefined, role: "assistant", content: answer, sources: sourcesForThisTurn, citedIndices, truncated, feedback: null },
         ]);
         setIsStreaming(false);
         setDraftAnswer("");
@@ -122,7 +123,9 @@ function ChatPage() {
     try {
       const detail = await getSession(id);
       setSessionId(detail.session_id);
-      setMessages(detail.history.map((h) => ({ role: h.role as "user" | "assistant", content: h.content })));
+      setMessages(
+        detail.history.map((h) => ({ id: h.id, role: h.role as "user" | "assistant", content: h.content, feedback: h.feedback }))
+      );
       setDraftAnswer("");
       setDraftSources([]);
       setError(null);
@@ -130,6 +133,18 @@ function ChatPage() {
     } catch {
       setError("Couldn't load that conversation — it may have expired.");
     }
+  };
+
+  const handleFeedback = (index: number, next: "up" | "down" | null) => {
+    const target = messages[index];
+    if (!target?.id || !sessionId) return;
+    const previous = target.feedback ?? null;
+    // Optimistic — a thumbs click should feel instant; this is a low-stakes
+    // signal, not worth blocking the UI on a round trip. Reverted on failure.
+    setMessages((prev) => prev.map((m, i) => (i === index ? { ...m, feedback: next } : m)));
+    setMessageFeedback(sessionId, target.id, next).catch(() => {
+      setMessages((prev) => prev.map((m, i) => (i === index ? { ...m, feedback: previous } : m)));
+    });
   };
 
   const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
@@ -184,7 +199,7 @@ function ChatPage() {
           <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-6">
             <div className="mx-auto max-w-3xl space-y-4">
               {messages.map((m, i) => (
-                <MessageBubble key={i} message={m} />
+                <MessageBubble key={i} message={m} onFeedback={(next) => handleFeedback(i, next)} />
               ))}
               {isStreaming && (
                 <MessageBubble
@@ -211,26 +226,65 @@ function ChatPage() {
   );
 }
 
-function MessageBubble({ message, pending }: { message: ChatMessage; pending?: boolean }) {
+function MessageBubble({
+  message,
+  pending,
+  onFeedback,
+}: {
+  message: ChatMessage;
+  pending?: boolean;
+  onFeedback?: (feedback: "up" | "down" | null) => void;
+}) {
   const isUser = message.role === "user";
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
-      <div
-        className={`cyber-chamfer-sm max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${
-          isUser ? "bg-coral-500 text-white" : "border border-ink-800 bg-ink-900/80 text-ink-100"
-        }`}
-      >
-        {pending ? (
-          <span className="text-ink-500">Thinking…</span>
-        ) : isUser ? (
-          message.content
-        ) : (
-          <>
-            <CitationText text={message.content} />
-            {message.truncated && (
-              <p className="mt-1.5 text-xs text-ink-500">Response was cut short — ask to continue for more.</p>
-            )}
-          </>
+      <div className="max-w-[85%]">
+        <div
+          className={`cyber-chamfer-sm rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${
+            isUser ? "bg-coral-500 text-white" : "border border-ink-800 bg-ink-900/80 text-ink-100"
+          }`}
+        >
+          {pending ? (
+            <span className="text-ink-500">Thinking…</span>
+          ) : isUser ? (
+            message.content
+          ) : (
+            <>
+              <CitationText text={message.content} />
+              {message.truncated && (
+                <p className="mt-1.5 text-xs text-ink-500">Response was cut short — ask to continue for more.</p>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* Only assistant turns durably persisted with an id can carry
+            feedback — the currently-streaming draft bubble has neither. */}
+        {!isUser && !pending && message.id && onFeedback && (
+          <div className="mt-1 flex items-center gap-0.5 px-1">
+            <button
+              type="button"
+              aria-label="Good response"
+              aria-pressed={message.feedback === "up"}
+              onClick={() => onFeedback(message.feedback === "up" ? null : "up")}
+              className={`rounded-md p-1 transition ${
+                message.feedback === "up" ? "text-coral-500" : "text-ink-600 hover:text-ink-300"
+              }`}
+            >
+              <ThumbsUp className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              aria-label="Bad response"
+              aria-pressed={message.feedback === "down"}
+              onClick={() => onFeedback(message.feedback === "down" ? null : "down")}
+              className={`rounded-md p-1 transition ${
+                message.feedback === "down" ? "text-coral-500" : "text-ink-600 hover:text-ink-300"
+              }`}
+            >
+              <ThumbsDown className="h-3.5 w-3.5" />
+            </button>
+          </div>
         )}
       </div>
     </div>

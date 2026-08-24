@@ -161,3 +161,7 @@ export function getSessions(search?: string) {
 export function getSession(id: string) {
   return get<SessionDetail>(`/sessions/${id}`);
 }
+
+export function setMessageFeedback(sessionId: string, messageId: string, feedback: "up" | "down" | null) {
+  return post<void>(`/sessions/${sessionId}/messages/${messageId}/feedback`, { feedback });
+}

@@ -232,3 +232,7 @@ class ChatMessage(Base):
     # GENERATED ALWAYS AS ... STORED in infra/postgres/009_chat_search.sql —
     # Postgres computes this from `content`, the app never writes it directly.
     search_vector: Mapped[str | None] = mapped_column(TSVECTOR, nullable=True)
+    # Mirrors infra/postgres/007_message_feedback.sql. Null = no feedback
+    # given; only ever set on assistant messages, but nothing in this model
+    # enforces that — see the migration's comment.
+    feedback: Mapped[str | None] = mapped_column(Text, nullable=True)

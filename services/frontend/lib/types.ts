@@ -7,11 +7,13 @@ export interface Source {
 }
 
 export interface ChatMessage {
+  id?: string; // assistant messages only — needed to submit thumbs up/down feedback
   role: "user" | "assistant";
   content: string;
   sources?: Source[]; // only present on the turn that was live-streamed this session
   citedIndices?: number[];
   truncated?: boolean; // true if Gemini hit max_output_tokens before finishing
+  feedback?: "up" | "down" | null;
 }
 
 export interface SessionSummary {
@@ -23,7 +25,7 @@ export interface SessionSummary {
 
 export interface SessionDetail {
   session_id: string;
-  history: { role: string; content: string }[];
+  history: { id: string; role: string; content: string; feedback: "up" | "down" | null }[];
 }
 
 export interface ConnectionStatus {
