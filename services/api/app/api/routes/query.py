@@ -179,8 +179,17 @@ async def query(
             # this turn at all — the fallback conversation existed in the
             # sidebar (via the user-turn append above) but replaying it via
             # GET /sessions/{id} would have shown only the question, no reply.
-            await append_history(session, auth.org_id, auth.user_id, session_id, "assistant", fallback)
-            yield _sse("done", {"session_id": session_id, "cited_indices": [], "answer": fallback, "truncated": False})
+            message_id = await append_history(session, auth.org_id, auth.user_id, session_id, "assistant", fallback)
+            yield _sse(
+                "done",
+                {
+                    "session_id": session_id,
+                    "cited_indices": [],
+                    "answer": fallback,
+                    "truncated": False,
+                    "message_id": str(message_id),
+                },
+            )
             return
 
         excerpt_block = "\n\n".join(
@@ -214,11 +223,17 @@ async def query(
 
         # User turn already recorded at the top of event_stream(); only the
         # assistant side is new here.
-        await append_history(session, auth.org_id, auth.user_id, session_id, "assistant", full_answer)
+        message_id = await append_history(session, auth.org_id, auth.user_id, session_id, "assistant", full_answer)
 
         yield _sse(
             "done",
-            {"session_id": session_id, "cited_indices": cited_indices, "answer": full_answer, "truncated": truncated},
+            {
+                "session_id": session_id,
+                "cited_indices": cited_indices,
+                "answer": full_answer,
+                "truncated": truncated,
+                "message_id": str(message_id),
+            },
         )
 
     return StreamingResponse(

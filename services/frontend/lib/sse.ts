@@ -4,7 +4,7 @@ import type { Source } from "./types";
 interface StreamCallbacks {
   onSources: (sessionId: string, sources: Source[]) => void;
   onDelta: (text: string) => void;
-  onDone: (sessionId: string, citedIndices: number[], answer: string, truncated: boolean) => void;
+  onDone: (sessionId: string, citedIndices: number[], answer: string, truncated: boolean, messageId: string) => void;
   onError: (message: string) => void;
 }
 
@@ -82,7 +82,7 @@ function dispatch(rawEvent: string, cb: StreamCallbacks): void {
       cb.onDelta(data.text ?? "");
       break;
     case "done":
-      cb.onDone(data.session_id, data.cited_indices ?? [], data.answer ?? "", data.truncated ?? false);
+      cb.onDone(data.session_id, data.cited_indices ?? [], data.answer ?? "", data.truncated ?? false, data.message_id ?? "");
       break;
     case "error":
       cb.onError(data.message ?? "Unknown streaming error");

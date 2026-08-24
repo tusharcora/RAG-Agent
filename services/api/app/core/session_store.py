@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -33,23 +33,30 @@ async def load_history(session: AsyncSession, org_id: uuid.UUID, user_id: uuid.U
     if not await _owned_by(session, sid, org_id, user_id):
         return []
     rows = await session.execute(
-        select(ChatMessage.role, ChatMessage.content)
+        select(ChatMessage.id, ChatMessage.role, ChatMessage.content, ChatMessage.feedback)
         .where(ChatMessage.session_id == sid)
         .order_by(desc(ChatMessage.created_at))
         .limit(settings.session_history_max_turns * 2)
     )
-    return [{"role": r.role, "content": r.content} for r in reversed(rows.all())]
+    return [
+        {"id": str(r.id), "role": r.role, "content": r.content, "feedback": r.feedback}
+        for r in reversed(rows.all())
+    ]
 
 
 async def append_history(
     session: AsyncSession, org_id: uuid.UUID, user_id: uuid.UUID, session_id: str, role: str, content: str
-) -> None:
+) -> uuid.UUID:
     """Upserts the chat_sessions row (creating it on the first call for a new
     session_id) and inserts the message, in one commit. Called at the very
     start of a turn for the user's question and again once the assistant's
     answer is known — see query.py — so a brand-new conversation is durably
     recorded, and visible via GET /sessions, the instant a question is sent,
-    not once the full answer finishes streaming."""
+    not once the full answer finishes streaming.
+
+    Returns the new message's id — query.py needs the assistant message's id
+    to hand back to the frontend so it can submit thumbs up/down feedback
+    against it."""
     sid = uuid.UUID(session_id)
     insert_stmt = pg_insert(ChatSession).values(
         id=sid,
@@ -70,8 +77,32 @@ async def append_history(
         },
     )
     await session.execute(upsert_stmt)
-    session.add(ChatMessage(id=uuid.uuid4(), session_id=sid, role=role, content=content))
+    message_id = uuid.uuid4()
+    session.add(ChatMessage(id=message_id, session_id=sid, role=role, content=content))
     await session.commit()
+    return message_id
+
+
+async def set_feedback(
+    session: AsyncSession, org_id: uuid.UUID, user_id: uuid.UUID, message_id: uuid.UUID, feedback: str | None
+) -> bool:
+    """Updates chat_messages.feedback, scoped through a join to chat_sessions
+    the same way _owned_by scopes reads above — a message_id that doesn't
+    exist, or belongs to a different org/user, updates zero rows. Returns
+    whether a row was actually updated so the route can 404 rather than
+    silently succeed on a foreign or nonexistent message id."""
+    result = await session.execute(
+        update(ChatMessage)
+        .where(
+            ChatMessage.id == message_id,
+            ChatMessage.session_id == ChatSession.id,
+            ChatSession.org_id == org_id,
+            ChatSession.user_id == user_id,
+        )
+        .values(feedback=feedback)
+    )
+    await session.commit()
+    return result.rowcount > 0
 
 
 async def list_sessions(session: AsyncSession, org_id: uuid.UUID, user_id: uuid.UUID, limit: int = 20) -> list[dict]:
@@ -103,6 +134,8 @@ async def get_session_detail(
     if not await _owned_by(session, sid, org_id, user_id):
         return None
     rows = await session.execute(
-        select(ChatMessage.role, ChatMessage.content).where(ChatMessage.session_id == sid).order_by(ChatMessage.created_at)
+        select(ChatMessage.id, ChatMessage.role, ChatMessage.content, ChatMessage.feedback)
+        .where(ChatMessage.session_id == sid)
+        .order_by(ChatMessage.created_at)
     )
-    return [{"role": r.role, "content": r.content} for r in rows]
+    return [{"id": str(r.id), "role": r.role, "content": r.content, "feedback": r.feedback} for r in rows]

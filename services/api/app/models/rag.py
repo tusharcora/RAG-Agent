@@ -229,3 +229,7 @@ class ChatMessage(Base):
     role: Mapped[str] = mapped_column(Text, nullable=False)  # 'user' | 'assistant'
     content: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+    # Mirrors infra/postgres/007_message_feedback.sql. Null = no feedback
+    # given; only ever set on assistant messages, but nothing in this model
+    # enforces that — see the migration's comment.
+    feedback: Mapped[str | None] = mapped_column(Text, nullable=True)
