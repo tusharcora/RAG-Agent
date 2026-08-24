@@ -10,6 +10,12 @@ import { SourcesPanel } from "@/components/chat/SourcesPanel";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { CitationText } from "@/components/chat/CitationText";
 import { LandingPage } from "@/components/landing/LandingPage";
+import { Button } from "@/components/base/buttons/button";
+
+// Sent as a normal follow-up question in the same session when the user hits
+// "Continue" — Gemini already has the truncated turn in its own context via
+// load_history, so no dedicated backend endpoint is needed, just a nudge.
+const CONTINUATION_PROMPT = "Please continue your previous answer from exactly where it left off, with no repetition.";
 
 export default function HomePage() {
   const { user, loading } = useAuth();
@@ -54,6 +60,9 @@ function ChatPage() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [draftAnswer, setDraftAnswer] = useState("");
   const [draftSources, setDraftSources] = useState<Source[]>([]);
+  // True only while a "Continue" call is in flight — tells the render below
+  // to append the stream onto the last bubble instead of opening a new one.
+  const [continuing, setContinuing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sessionRefreshSignal, setSessionRefreshSignal] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -64,6 +73,9 @@ function ChatPage() {
 
   const handleSend = (question: string) => {
     setError(null);
+    // A fresh question retires any dangling "Continue" affordance from the
+    // previous turn — it's only ever valid against the immediately-prior answer.
+    setContinuing(false);
     setMessages((prev) => [...prev, { role: "user", content: question }]);
     setIsStreaming(true);
     setDraftAnswer("");
@@ -110,11 +122,65 @@ function ChatPage() {
     });
   };
 
+  // Re-asks the truncated turn's own session for "more" — same SSE turn as a
+  // normal question, just with no visible user bubble, and the reply gets
+  // merged onto the existing assistant bubble instead of starting a new one
+  // (see the render below). The backend still records CONTINUATION_PROMPT as
+  // a real turn in Postgres; only the live render hides it.
+  const handleContinue = () => {
+    setError(null);
+    setContinuing(true);
+    setIsStreaming(true);
+    setDraftAnswer("");
+    setDraftSources([]);
+    scrollToBottom();
+
+    let sourcesForThisTurn: Source[] = [];
+
+    streamQuery(CONTINUATION_PROMPT, sessionId, {
+      onSources: (sid, sources) => {
+        setSessionId(sid);
+        setDraftSources(sources);
+        sourcesForThisTurn = sources;
+        scrollToBottom();
+      },
+      onDelta: (text) => {
+        setDraftAnswer((prev) => prev + text);
+        scrollToBottom();
+      },
+      onDone: (sid, citedIndices, answer, truncated) => {
+        setSessionId(sid);
+        // Concatenated with no separator on purpose — a MAX_TOKENS cutoff can
+        // land mid-word, and the prompt asks Gemini to resume from exactly there.
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          return [
+            ...prev.slice(0, -1),
+            { ...last, content: last.content + answer, sources: sourcesForThisTurn, citedIndices, truncated },
+          ];
+        });
+        setIsStreaming(false);
+        setContinuing(false);
+        setDraftAnswer("");
+        setDraftSources([]);
+        scrollToBottom();
+      },
+      onError: (message) => {
+        setError(message);
+        setIsStreaming(false);
+        setContinuing(false);
+        setDraftAnswer("");
+        scrollToBottom();
+      },
+    });
+  };
+
   const handleNewChat = () => {
     setSessionId(null);
     setMessages([]);
     setDraftAnswer("");
     setDraftSources([]);
+    setContinuing(false);
     setError(null);
   };
 
@@ -125,6 +191,7 @@ function ChatPage() {
       setMessages(detail.history.map((h) => ({ role: h.role as "user" | "assistant", content: h.content })));
       setDraftAnswer("");
       setDraftSources([]);
+      setContinuing(false);
       setError(null);
       scrollToBottom();
     } catch {
@@ -183,10 +250,22 @@ function ChatPage() {
         <div className="flex min-w-0 flex-1 flex-col">
           <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-6">
             <div className="mx-auto max-w-3xl space-y-4">
-              {messages.map((m, i) => (
-                <MessageBubble key={i} message={m} />
-              ))}
-              {isStreaming && (
+              {messages.map((m, i) => {
+                const isLast = i === messages.length - 1;
+                // While a Continue call streams, its text lands here (appended
+                // onto the truncated bubble) instead of in a new pending bubble
+                // below, so the answer reads as one continuous reply.
+                const liveAppend = continuing && isLast && m.role === "assistant";
+                const display = liveAppend ? { ...m, content: m.content + draftAnswer, truncated: false } : m;
+                return (
+                  <MessageBubble
+                    key={i}
+                    message={display}
+                    onContinue={isLast && !isStreaming && m.truncated ? handleContinue : undefined}
+                  />
+                );
+              })}
+              {isStreaming && !continuing && (
                 <MessageBubble
                   message={{ role: "assistant", content: draftAnswer || "…" }}
                   pending={draftAnswer.length === 0}
@@ -211,7 +290,15 @@ function ChatPage() {
   );
 }
 
-function MessageBubble({ message, pending }: { message: ChatMessage; pending?: boolean }) {
+function MessageBubble({
+  message,
+  pending,
+  onContinue,
+}: {
+  message: ChatMessage;
+  pending?: boolean;
+  onContinue?: () => void;
+}) {
   const isUser = message.role === "user";
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
@@ -228,7 +315,14 @@ function MessageBubble({ message, pending }: { message: ChatMessage; pending?: b
           <>
             <CitationText text={message.content} />
             {message.truncated && (
-              <p className="mt-1.5 text-xs text-ink-500">Response was cut short — ask to continue for more.</p>
+              <div className="mt-2 flex items-center gap-2">
+                <p className="text-xs text-ink-500">Response was cut short.</p>
+                {onContinue && (
+                  <Button color="secondary" size="sm" onPress={onContinue}>
+                    Continue
+                  </Button>
+                )}
+              </div>
             )}
           </>
         )}
