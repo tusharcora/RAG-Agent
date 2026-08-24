@@ -69,6 +69,7 @@ class InviteResponse(BaseModel):
 class MeResponse(BaseModel):
     user_id: str
     org_id: str
+    org_name: str
     role: str
     email: str
     display_name: str | None
@@ -117,6 +118,7 @@ async def signup(
         invite.accepted_at = datetime.now(timezone.utc)
         role = invite.role
         org_id = invite.org_id
+        org = await session.get(Organization, org_id)
 
     session.add(OrgMember(id=uuid.uuid4(), org_id=org_id, user_id=user.id, role=role))
     await session.commit()
@@ -124,7 +126,12 @@ async def signup(
     token = create_access_token(user.id, org_id, role)
     _set_session_cookie(response, token)
     return MeResponse(
-        user_id=str(user.id), org_id=str(org_id), role=role, email=user.email, display_name=user.display_name
+        user_id=str(user.id),
+        org_id=str(org_id),
+        org_name=org.name,
+        role=role,
+        email=user.email,
+        display_name=user.display_name,
     )
 
 
@@ -148,12 +155,14 @@ async def login(request: LoginRequest, response: Response, session: AsyncSession
     # A user in exactly one org is auto-selected; a user in multiple orgs is
     # logged into the first (earliest-joined) and can switch via /auth/select-org.
     active = memberships[0]
+    org = await session.get(Organization, active.org_id)
 
     token = create_access_token(user.id, active.org_id, active.role)
     _set_session_cookie(response, token)
     return MeResponse(
         user_id=str(user.id),
         org_id=str(active.org_id),
+        org_name=org.name,
         role=active.role,
         email=user.email,
         display_name=user.display_name,
@@ -180,11 +189,17 @@ async def select_org(
     if row is None:
         raise HTTPException(status_code=403, detail="Not a member of that organization")
     member, user = row
+    org = await session.get(Organization, member.org_id)
 
     token = create_access_token(user.id, member.org_id, member.role)
     _set_session_cookie(response, token)
     return MeResponse(
-        user_id=str(user.id), org_id=str(member.org_id), role=member.role, email=user.email, display_name=user.display_name
+        user_id=str(user.id),
+        org_id=str(member.org_id),
+        org_name=org.name,
+        role=member.role,
+        email=user.email,
+        display_name=user.display_name,
     )
 
 
@@ -198,8 +213,16 @@ async def me(auth: AuthContext = Depends(require_auth), session: AsyncSession = 
     user = await session.get(User, auth.user_id)
     if user is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
+    org = await session.get(Organization, auth.org_id)
+    if org is None:
+        raise HTTPException(status_code=500, detail="Organization not found")
     return MeResponse(
-        user_id=str(auth.user_id), org_id=str(auth.org_id), role=auth.role, email=user.email, display_name=user.display_name
+        user_id=str(auth.user_id),
+        org_id=str(auth.org_id),
+        org_name=org.name,
+        role=auth.role,
+        email=user.email,
+        display_name=user.display_name,
     )
 
 
