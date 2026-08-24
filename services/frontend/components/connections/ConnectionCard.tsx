@@ -72,6 +72,25 @@ export function ConnectionCard({ status, onSynced }: { status: ConnectionStatus;
           <Row label="Workspace" value={status.workspace_name ?? "—"} />
           <Row label="Last synced" value={formatTimestamp(status.last_synced_at)} />
           <Row label="Visibility" value={status.visibility_mode === "restricted" ? "Restricted" : "Org-wide"} />
+          {status.last_sync_status === "dead_lettered" && (
+            // Distinct from the 24h-count badge below: this means the *most recent*
+            // sync attempt gave up after exhausting retries, i.e. still broken right
+            // now — not just "had a blip earlier today that's since recovered."
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-ink-500">Sync status</span>
+              <Badge type="pill-color" color="error" size="sm">
+                Last sync failed
+              </Badge>
+            </div>
+          )}
+          {status.dead_lettered_count_24h > 0 && (
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-ink-500">Reliability</span>
+              <Badge type="pill-color" color="warning" size="sm">
+                {status.dead_lettered_count_24h} failed in last 24h
+              </Badge>
+            </div>
+          )}
           {preview && (
             <div className="flex items-center justify-between gap-4">
               <span className="text-ink-500">Visible to integration</span>
