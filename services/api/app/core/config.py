@@ -47,7 +47,11 @@ class Settings(BaseSettings):
     query_model: str = "gemini-3.6-flash"
     query_top_k: int = 5
 
-    session_history_ttl_seconds: int = 60 * 60  # 1h
+    # Chat history itself is durable (Postgres, no TTL — see
+    # infra/postgres/006_chat_history.sql / session_store.py); this only caps
+    # how many recent turns get sent to Gemini as conversation context per
+    # query, so a long-running conversation doesn't grow context/cost
+    # unbounded on every subsequent question.
     session_history_max_turns: int = 10
 
     oauth_state_ttl_seconds: int = 600  # 10min

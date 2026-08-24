@@ -1,7 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import AuthContext, require_auth
+from app.core.db import get_session
 from app.core.session_store import get_session_detail, list_sessions
 
 router = APIRouter(dependencies=[Depends(require_auth)])
@@ -25,15 +27,27 @@ class SessionDetail(BaseModel):
 
 
 @router.get("")
-async def sessions(limit: int = Query(20, le=100), auth: AuthContext = Depends(require_auth)) -> list[SessionSummary]:
-    return await list_sessions(auth.org_id, auth.user_id, limit)
+async def sessions(
+    limit: int = Query(20, le=100),
+    auth: AuthContext = Depends(require_auth),
+    session: AsyncSession = Depends(get_session),
+) -> list[SessionSummary]:
+    return await list_sessions(session, auth.org_id, auth.user_id, limit)
 
 
 @router.get("/{session_id}")
-async def session_detail(session_id: str, auth: AuthContext = Depends(require_auth)) -> SessionDetail:
-    # Scoped Redis keys mean a session_id belonging to another user simply
-    # doesn't resolve here — no separate ownership check needed.
-    history = await get_session_detail(auth.org_id, auth.user_id, session_id)
+async def session_detail(
+    session_id: str,
+    auth: AuthContext = Depends(require_auth),
+    session: AsyncSession = Depends(get_session),
+) -> SessionDetail:
+    # A malformed id (not even a valid UUID) can't belong to anyone —
+    # indistinguishable from "not found" rather than a 500, same as an id
+    # that's well-formed but doesn't resolve for this user.
+    try:
+        history = await get_session_detail(session, auth.org_id, auth.user_id, session_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Session not found")
     if history is None:
-        raise HTTPException(status_code=404, detail="Session not found or expired")
+        raise HTTPException(status_code=404, detail="Session not found")
     return SessionDetail(session_id=session_id, history=history)

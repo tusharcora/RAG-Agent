@@ -2,7 +2,7 @@ import json
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from google import genai
 from google.genai import errors as genai_errors
@@ -97,7 +97,18 @@ async def query(
     auth: AuthContext = Depends(require_auth),
     session: AsyncSession = Depends(get_session),
 ) -> StreamingResponse:
-    session_id = request.session_id or str(uuid.uuid4())
+    if request.session_id:
+        try:
+            # Normalizes casing/format too — chat_sessions.id is a real
+            # Postgres UUID primary key now (durable storage, see
+            # session_store.py), not an arbitrary Redis key string, so a
+            # malformed client-supplied id needs to fail cleanly here rather
+            # than blow up inside session_store's uuid.UUID(...) later.
+            session_id = str(uuid.UUID(request.session_id))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid session_id")
+    else:
+        session_id = str(uuid.uuid4())
     top_k = request.top_k or settings.query_top_k
 
     [question_embedding] = await embed_texts([request.question], input_type="query")
@@ -136,7 +147,7 @@ async def query(
         # degraded recall is visible rather than silently confident.
         logger.info("Retrieved %d/%d rows for org=%s (permission filter may have reduced recall)", len(rows), top_k, auth.org_id)
 
-    history = await load_history(auth.org_id, auth.user_id, session_id) if request.session_id else []
+    history = await load_history(session, auth.org_id, auth.user_id, session_id) if request.session_id else []
 
     async def event_stream():
         # Recorded before anything else in this turn — previously this only
@@ -144,10 +155,14 @@ async def query(
         # down), which meant a new conversation didn't show up in the session
         # sidebar (GET /sessions reads this same index) until the whole
         # response was done, sometimes many seconds later. append_history's
-        # zadd to the sessions index is what makes a session listed at all;
+        # upsert is what makes a session listed (and durably saved) at all;
         # doing it this early means it's true the instant a question is sent,
-        # not once an answer completes.
-        await append_history(auth.org_id, auth.user_id, session_id, "user", request.question)
+        # not once an answer completes. The FastAPI session dependency stays
+        # open for the life of a StreamingResponse (closed only after the
+        # response finishes sending), so reusing `session` inside this
+        # generator — well after the handler function itself has returned —
+        # is safe.
+        await append_history(session, auth.org_id, auth.user_id, session_id, "user", request.question)
 
         sources = [
             {"index": i + 1, "title": r["title"], "url": r["url"], "source": r["source"], "snippet": r["content"][:280]}
@@ -164,7 +179,7 @@ async def query(
             # this turn at all — the fallback conversation existed in the
             # sidebar (via the user-turn append above) but replaying it via
             # GET /sessions/{id} would have shown only the question, no reply.
-            await append_history(auth.org_id, auth.user_id, session_id, "assistant", fallback)
+            await append_history(session, auth.org_id, auth.user_id, session_id, "assistant", fallback)
             yield _sse("done", {"session_id": session_id, "cited_indices": [], "answer": fallback, "truncated": False})
             return
 
@@ -199,7 +214,7 @@ async def query(
 
         # User turn already recorded at the top of event_stream(); only the
         # assistant side is new here.
-        await append_history(auth.org_id, auth.user_id, session_id, "assistant", full_answer)
+        await append_history(session, auth.org_id, auth.user_id, session_id, "assistant", full_answer)
 
         yield _sse(
             "done",
