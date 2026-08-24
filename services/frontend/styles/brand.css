@@ -77,6 +77,23 @@
     --color-status-failed: #f16d70;
     --color-status-dead_lettered: #e8464a;
 
+    /* coral is an alias of brand: several hand-written components
+       reference bg-coral-500 / text-coral-400 / etc expecting the accent
+       color, but the accent scale is actually named color-brand here, a
+       different Tailwind namespace, so those coral classes generated no
+       CSS at all until this alias was added. */
+    --color-coral-50: var(--color-brand-50);
+    --color-coral-100: var(--color-brand-100);
+    --color-coral-200: var(--color-brand-200);
+    --color-coral-300: var(--color-brand-300);
+    --color-coral-400: var(--color-brand-400);
+    --color-coral-500: var(--color-brand-500);
+    --color-coral-600: var(--color-brand-600);
+    --color-coral-700: var(--color-brand-700);
+    --color-coral-800: var(--color-brand-800);
+    --color-coral-900: var(--color-brand-900);
+    --color-coral-950: var(--color-brand-950);
+
     --shadow-panel: 0 1px 2px 0 rgb(0 0 0 / 0.4), 0 0 0 1px rgb(255 255 255 / 0.04);
     --shadow-glow: 0 0 40px -8px rgb(232 70 74 / 0.35);
 }

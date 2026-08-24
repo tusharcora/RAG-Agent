@@ -37,7 +37,7 @@ export function SessionSidebar({
   return (
     <aside className="flex w-64 shrink-0 flex-col border-r border-ink-800 bg-ink-900/40">
       <div className="p-3">
-        <Button color="secondary" size="sm" iconLeading={Plus} onPress={onNewChat} className="w-full">
+        <Button color="secondary" size="sm" iconLeading={Plus} onPress={onNewChat} className="cyber-chamfer-sm w-full">
           New chat
         </Button>
       </div>
@@ -52,7 +52,7 @@ export function SessionSidebar({
               <button
                 type="button"
                 onClick={() => onSelect(s.session_id)}
-                className={`w-full truncate rounded-lg px-2 py-2 text-left text-sm transition ${
+                className={`cyber-chamfer-sm w-full truncate rounded-lg px-2 py-2 text-left text-sm transition ${
                   s.session_id === activeSessionId
                     ? "bg-coral-500/15 text-coral-200"
                     : "text-ink-400 hover:bg-ink-800/60 hover:text-ink-200"

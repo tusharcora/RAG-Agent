@@ -32,7 +32,8 @@ export function ChatInput({ disabled, onSend }: { disabled: boolean; onSend: (qu
   };
 
   return (
-    <div className="flex items-end gap-2 rounded-[28px] border border-ink-700 bg-ink-900/80 py-2 pr-2 pl-4 shadow-panel transition focus-within:border-coral-500/50">
+    <div className="cyber-chamfer flex items-end gap-2 rounded-[28px] border border-ink-700 bg-ink-900/80 py-2 pr-2 pl-4 shadow-panel transition focus-within:border-coral-500/50">
+      <span className="cyber-terminal-prompt self-center">&gt;</span>
       <TextArea
         aria-label="Ask a question"
         value={value}

@@ -39,7 +39,7 @@ export default function LoginPage() {
         aria-hidden
         className="pointer-events-none absolute left-1/2 top-1/4 h-96 w-96 -translate-x-1/2 rounded-full bg-coral-500/10 blur-[100px]"
       />
-      <div className="relative w-full max-w-sm rounded-2xl border border-ink-800 bg-ink-900/60 p-7 shadow-panel">
+      <div className="cyber-chamfer relative w-full max-w-sm rounded-2xl border border-ink-800 bg-ink-900/60 p-7 shadow-panel">
         <h1 className="mb-1 text-lg font-semibold text-ink-50">Welcome back</h1>
         <p className="mb-6 text-sm text-ink-500">Log in to your organization's knowledge base.</p>
 
