@@ -1,8 +1,11 @@
 import { StatusBadge } from "@/components/StatusBadge";
 import { Table } from "@/components/application/table/table";
+import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import type { EventLogEntry } from "@/lib/types";
 
 export function EventTable({ events }: { events: EventLogEntry[] }) {
+  const copy = useCopyToClipboard();
+
   if (events.length === 0) {
     return <p className="px-1 py-8 text-center text-sm text-ink-500">No events yet — trigger a sync to see activity here.</p>;
   }
@@ -30,7 +33,7 @@ export function EventTable({ events }: { events: EventLogEntry[] }) {
               {e.trace_id ? (
                 <button
                   type="button"
-                  onClick={() => navigator.clipboard?.writeText(e.trace_id ?? "")}
+                  onClick={() => copy(e.trace_id ?? "", "Trace ID copied")}
                   className="font-mono text-xs text-quaternary hover:text-tertiary"
                   title="Copy trace id"
                 >

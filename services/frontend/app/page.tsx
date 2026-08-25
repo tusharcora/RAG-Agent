@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useRef, useState, useCallback } from "react";
 import { ThumbsDown, ThumbsUp } from "@untitledui/icons";
 import { getSession, setMessageFeedback } from "@/lib/api";
 import { streamQuery } from "@/lib/sse";
@@ -67,6 +67,14 @@ function ChatPage() {
   const [error, setError] = useState<string | null>(null);
   const [sessionRefreshSignal, setSessionRefreshSignal] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Set when a [n] citation marker in an answer is clicked; cleared after a
+  // brief flash so SourcesPanel's highlight ring is transient, not sticky.
+  const [highlightedSourceIndex, setHighlightedSourceIndex] = useState<number | null>(null);
+
+  const handleCitationClick = useCallback((index: number) => {
+    setHighlightedSourceIndex(index);
+    setTimeout(() => setHighlightedSourceIndex((current) => (current === index ? null : current)), 1200);
+  }, []);
 
   const scrollToBottom = () => {
     requestAnimationFrame(() => scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight }));
@@ -281,6 +289,7 @@ function ChatPage() {
                     message={display}
                     onFeedback={(next) => handleFeedback(i, next)}
                     onContinue={isLast && !isStreaming && m.truncated ? handleContinue : undefined}
+                    onCitationClick={handleCitationClick}
                   />
                 );
               })}
@@ -304,7 +313,12 @@ function ChatPage() {
         </div>
       )}
 
-      <SourcesPanel sources={activeSources} citedIndices={activeCitedIndices} isStreaming={isStreaming} />
+      <SourcesPanel
+        sources={activeSources}
+        citedIndices={activeCitedIndices}
+        isStreaming={isStreaming}
+        highlightedIndex={highlightedSourceIndex}
+      />
     </div>
   );
 }
@@ -314,11 +328,13 @@ function MessageBubble({
   pending,
   onFeedback,
   onContinue,
+  onCitationClick,
 }: {
   message: ChatMessage;
   pending?: boolean;
   onFeedback?: (feedback: "up" | "down" | null) => void;
   onContinue?: () => void;
+  onCitationClick?: (index: number) => void;
 }) {
   const isUser = message.role === "user";
   return (
@@ -335,7 +351,7 @@ function MessageBubble({
             message.content
           ) : (
             <>
-              <CitationText text={message.content} />
+              <CitationText text={message.content} onCitationClick={onCitationClick} />
               {message.truncated && (
                 <div className="mt-2 flex items-center gap-2">
                   <p className="text-xs text-ink-500">Response was cut short.</p>

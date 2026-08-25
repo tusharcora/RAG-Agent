@@ -24,18 +24,26 @@ export default function KnowledgeBasePage() {
   const [documents, setDocuments] = useState<DocumentSummary[]>([]);
   const [total, setTotal] = useState(0);
   const [search, setSearch] = useState("");
+  // Debounced separately from `search` so typing doesn't fire a request per
+  // keystroke — same 300ms pattern as SessionSidebar.tsx's session search.
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [source, setSource] = useState<string>("");
   const [offset, setOffset] = useState(0);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
+  useEffect(() => {
+    const id = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(id);
+  }, [search]);
+
   const refresh = useCallback(() => {
-    getDocuments({ search: search || undefined, source: source || undefined, limit: PAGE_SIZE, offset })
+    getDocuments({ search: debouncedSearch || undefined, source: source || undefined, limit: PAGE_SIZE, offset })
       .then((res) => {
         setDocuments(res.items);
         setTotal(res.total);
       })
       .catch(() => {});
-  }, [search, source, offset]);
+  }, [debouncedSearch, source, offset]);
 
   useEffect(refresh, [refresh]);
 
