@@ -2,6 +2,9 @@
 
 import { useAuth } from "@/lib/auth-context";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { MembersSection } from "@/components/settings/MembersSection";
+import { InviteSection } from "@/components/settings/InviteSection";
+import { ServiceTokensSection } from "@/components/settings/ServiceTokensSection";
 
 function InfoRow({ label, value }: { label: string; value: string }) {
   return (
@@ -16,6 +19,7 @@ export default function SettingsPage() {
   const { user } = useAuth();
 
   if (!user) return null;
+  const isAdmin = user.role === "owner" || user.role === "admin";
 
   return (
     <div className="mx-auto max-w-3xl px-6 py-8">
@@ -38,9 +42,20 @@ export default function SettingsPage() {
         <ThemeToggle />
       </section>
 
-      <section className="rounded-2xl border border-dashed border-ink-700 p-6 text-center">
-        <p className="text-sm text-ink-500">More settings coming soon.</p>
-      </section>
+      <div className="mb-6">
+        <MembersSection />
+      </div>
+
+      {isAdmin && (
+        <>
+          <div className="mb-6">
+            <InviteSection />
+          </div>
+          <div className="mb-6">
+            <ServiceTokensSection />
+          </div>
+        </>
+      )}
     </div>
   );
 }

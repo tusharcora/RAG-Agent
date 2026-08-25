@@ -6,8 +6,11 @@ import type {
   DocumentListResponse,
   DocumentSummary,
   EventLogEntry,
+  InviteResult,
   MeResponse,
   OrgMember,
+  ServiceTokenCreated,
+  ServiceTokenSummary,
   SessionDetail,
   SessionSummary,
   VoyageUsage,
@@ -98,6 +101,24 @@ export function me() {
 
 export function getOrgMembers() {
   return get<OrgMember[]>("/org/members");
+}
+
+// --- Org management (owner/admin only) ---
+
+export function inviteMember(email: string, role: string) {
+  return post<InviteResult>("/auth/invite", { email, role });
+}
+
+export function listServiceTokens() {
+  return get<ServiceTokenSummary[]>("/auth/service-tokens");
+}
+
+export function createServiceToken(label: string) {
+  return post<ServiceTokenCreated>("/auth/service-tokens", { label });
+}
+
+export function revokeServiceToken(id: string) {
+  return del<void>(`/auth/service-tokens/${id}`);
 }
 
 // --- RAG agent ---
