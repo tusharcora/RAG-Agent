@@ -1,12 +1,14 @@
 "use client";
 
 import { Suspense, useCallback, useEffect, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { getConnections, getVoyageUsage } from "@/lib/api";
 import { useInterval } from "@/hooks/useInterval";
 import { useAuth } from "@/lib/auth-context";
+import { toast } from "@/lib/toast";
 import { ConnectionCard } from "@/components/connections/ConnectionCard";
 import { StatTile } from "@/components/StatTile";
+import { ConnectionCardSkeleton } from "@/components/base/skeleton/skeleton";
 import type { ConnectionStatus, VoyageUsage } from "@/lib/types";
 
 export default function ConnectionsPage() {
@@ -19,20 +21,34 @@ export default function ConnectionsPage() {
 
 function ConnectionsPageContent() {
   const [connections, setConnections] = useState<ConnectionStatus[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [pollFast, setPollFast] = useState(false);
   const [voyageUsage, setVoyageUsage] = useState<VoyageUsage | null>(null);
   const searchParams = useSearchParams();
   const justConnected = searchParams.get("connected");
+  const router = useRouter();
   const { user } = useAuth();
   const isAdmin = user?.role === "owner" || user?.role === "admin";
 
   const refresh = useCallback(() => {
     getConnections()
-      .then(setConnections)
+      .then((res) => {
+        setConnections(res);
+        setLoaded(true);
+      })
       .catch(() => {});
   }, []);
 
   useEffect(refresh, [refresh]);
+
+  // Toast instead of a permanent inline banner, and strip the query param so
+  // a page refresh doesn't keep re-showing "connected successfully".
+  useEffect(() => {
+    if (!justConnected) return;
+    toast.success(`${justConnected === "notion" ? "Notion" : "Jira"} connected successfully.`);
+    router.replace("/connections");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [justConnected]);
 
   // Operational/billing info, not something that needs to poll — a manual
   // page reload is fine to see updated usage, so this fetches once on mount
@@ -58,12 +74,6 @@ function ConnectionsPageContent() {
       <h1 className="mb-1 text-xl font-semibold text-ink-100">Connections</h1>
       <p className="mb-6 text-sm text-ink-500">Connect Notion and Jira, then sync content for retrieval.</p>
 
-      {justConnected && (
-        <div className="mb-6 rounded-xl border border-emerald-900/50 bg-emerald-950/30 px-3 py-2 text-sm text-emerald-300">
-          {justConnected === "notion" ? "Notion" : "Jira"} connected successfully.
-        </div>
-      )}
-
       {isAdmin && voyageUsage && (
         <div className="mb-6 flex flex-wrap gap-3">
           <StatTile
@@ -75,9 +85,16 @@ function ConnectionsPageContent() {
       )}
 
       <div className="grid gap-4 sm:grid-cols-2">
-        {connections.map((c) => (
-          <ConnectionCard key={c.provider} status={c} onSynced={handleSynced} />
-        ))}
+        {!loaded ? (
+          <>
+            <ConnectionCardSkeleton />
+            <ConnectionCardSkeleton />
+          </>
+        ) : (
+          connections.map((c) => (
+            <ConnectionCard key={c.provider} status={c} onSynced={handleSynced} isPolling={pollFast} />
+          ))
+        )}
       </div>
     </div>
   );
