@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { getConnections, getVoyageUsage } from "@/lib/api";
 import { useInterval } from "@/hooks/useInterval";
@@ -42,9 +42,13 @@ function ConnectionsPageContent() {
   useEffect(refresh, [refresh]);
 
   // Toast instead of a permanent inline banner, and strip the query param so
-  // a page refresh doesn't keep re-showing "connected successfully".
+  // a page refresh doesn't keep re-showing "connected successfully". Guarded
+  // by a ref (not just the justConnected dep) so React StrictMode's dev-only
+  // double-invocation of effects can't double-toast the same connection.
+  const announcedConnection = useRef<string | null>(null);
   useEffect(() => {
-    if (!justConnected) return;
+    if (!justConnected || announcedConnection.current === justConnected) return;
+    announcedConnection.current = justConnected;
     toast.success(`${justConnected === "notion" ? "Notion" : "Jira"} connected successfully.`);
     router.replace("/connections");
     // eslint-disable-next-line react-hooks/exhaustive-deps
