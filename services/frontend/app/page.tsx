@@ -1,10 +1,12 @@
 "use client";
 
 import { useRef, useState, useCallback } from "react";
-import { ThumbsDown, ThumbsUp } from "@untitledui/icons";
+import { Copy01, RefreshCw01, ThumbsDown, ThumbsUp } from "@untitledui/icons";
 import { getSession, setMessageFeedback } from "@/lib/api";
 import { streamQuery } from "@/lib/sse";
 import { useAuth } from "@/lib/auth-context";
+import { toast } from "@/lib/toast";
+import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import type { ChatMessage, Source } from "@/lib/types";
 import { SessionSidebar } from "@/components/chat/SessionSidebar";
 import { SourcesPanel } from "@/components/chat/SourcesPanel";
@@ -70,6 +72,12 @@ function ChatPage() {
   // Set when a [n] citation marker in an answer is clicked; cleared after a
   // brief flash so SourcesPanel's highlight ring is transient, not sticky.
   const [highlightedSourceIndex, setHighlightedSourceIndex] = useState<number | null>(null);
+  // The last real user question — CONTINUATION_PROMPT never overwrites this,
+  // so Regenerate always redoes the actual last question, not the synthetic
+  // "continue" nudge.
+  const [lastQuestion, setLastQuestion] = useState<string | null>(null);
+  // Lets a "Stop" button cut off an in-flight stream — see lib/sse.ts.
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const handleCitationClick = useCallback((index: number) => {
     setHighlightedSourceIndex(index);
@@ -80,108 +88,128 @@ function ChatPage() {
     requestAnimationFrame(() => scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight }));
   };
 
-  const handleSend = (question: string) => {
+  type StreamMode = "new" | "continue" | "regenerate";
+
+  const runStream = (question: string, mode: StreamMode) => {
     setError(null);
-    // A fresh question retires any dangling "Continue" affordance from the
-    // previous turn — it's only ever valid against the immediately-prior answer.
-    setContinuing(false);
-    setMessages((prev) => [...prev, { role: "user", content: question }]);
+    setContinuing(mode === "continue");
+    if (mode === "new") {
+      setLastQuestion(question);
+      setMessages((prev) => [...prev, { role: "user", content: question }]);
+      // The backend records this turn (and indexes the session) as soon as the
+      // question is sent, not once the answer finishes — bumping this right
+      // away lets the sidebar pick up a brand-new conversation immediately
+      // instead of waiting for its 15s poll.
+      setSessionRefreshSignal((n) => n + 1);
+    } else if (mode === "regenerate") {
+      // Drop the answer being replaced so the new stream lands in its place
+      // instead of appending a duplicate bubble below it.
+      setMessages((prev) => {
+        const idx = prev.map((m) => m.role).lastIndexOf("assistant");
+        return idx === -1 ? prev : prev.slice(0, idx);
+      });
+    }
     setIsStreaming(true);
     setDraftAnswer("");
     setDraftSources([]);
     scrollToBottom();
-    // The backend records this turn (and indexes the session) as soon as the
-    // question is sent, not once the answer finishes — bumping this right
-    // away lets the sidebar pick up a brand-new conversation immediately
-    // instead of waiting for its 15s poll.
-    setSessionRefreshSignal((n) => n + 1);
+
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
 
     // Scoped to this call, not React state — SSE events for this call arrive
     // in order (sources before done), so this is always fresh when onDone reads it.
     let sourcesForThisTurn: Source[] = [];
 
-    streamQuery(question, sessionId, {
-      onSources: (sid, sources) => {
-        setSessionId(sid);
-        setDraftSources(sources);
-        sourcesForThisTurn = sources;
-        scrollToBottom();
+    streamQuery(
+      question,
+      sessionId,
+      {
+        onSources: (sid, sources) => {
+          setSessionId(sid);
+          setDraftSources(sources);
+          sourcesForThisTurn = sources;
+          scrollToBottom();
+        },
+        onDelta: (text) => {
+          setDraftAnswer((prev) => prev + text);
+          scrollToBottom();
+        },
+        onDone: (sid, citedIndices, answer, truncated, messageId) => {
+          setSessionId(sid);
+          if (mode === "continue") {
+            // Concatenated with no separator on purpose — a MAX_TOKENS cutoff
+            // can land mid-word, and the prompt asks Gemini to resume from
+            // exactly there.
+            setMessages((prev) => {
+              const last = prev[prev.length - 1];
+              return [
+                ...prev.slice(0, -1),
+                { ...last, content: last.content + answer, sources: sourcesForThisTurn, citedIndices, truncated },
+              ];
+            });
+          } else {
+            setMessages((prev) => [
+              ...prev,
+              { id: messageId || undefined, role: "assistant", content: answer, sources: sourcesForThisTurn, citedIndices, truncated, feedback: null },
+            ]);
+          }
+          setIsStreaming(false);
+          setContinuing(false);
+          setDraftAnswer("");
+          setDraftSources([]);
+          scrollToBottom();
+        },
+        onError: (message) => {
+          setError(message);
+          setIsStreaming(false);
+          setContinuing(false);
+          setDraftAnswer("");
+          scrollToBottom();
+        },
       },
-      onDelta: (text) => {
-        setDraftAnswer((prev) => prev + text);
-        scrollToBottom();
-      },
-      onDone: (sid, citedIndices, answer, truncated, messageId) => {
-        setSessionId(sid);
-        setMessages((prev) => [
-          ...prev,
-          { id: messageId || undefined, role: "assistant", content: answer, sources: sourcesForThisTurn, citedIndices, truncated, feedback: null },
-        ]);
-        setIsStreaming(false);
-        setDraftAnswer("");
-        setDraftSources([]);
-        scrollToBottom();
-      },
-      onError: (message) => {
-        setError(message);
-        setIsStreaming(false);
-        setDraftAnswer("");
-        scrollToBottom();
-      },
-    });
+      controller.signal,
+    );
   };
+
+  const handleSend = (question: string) => runStream(question, "new");
 
   // Re-asks the truncated turn's own session for "more" — same SSE turn as a
   // normal question, just with no visible user bubble, and the reply gets
   // merged onto the existing assistant bubble instead of starting a new one
-  // (see the render below). The backend still records CONTINUATION_PROMPT as
-  // a real turn in Postgres; only the live render hides it.
-  const handleContinue = () => {
-    setError(null);
-    setContinuing(true);
-    setIsStreaming(true);
+  // (see runStream's onDone). The backend still records CONTINUATION_PROMPT
+  // as a real turn in Postgres; only the live render hides it.
+  const handleContinue = () => runStream(CONTINUATION_PROMPT, "continue");
+
+  const handleRegenerate = () => {
+    if (lastQuestion) runStream(lastQuestion, "regenerate");
+  };
+
+  // Once a delta may already be on the wire there's no way to ask the server
+  // to stop cleanly (see lib/sse.ts) — this just cancels the client-side read
+  // and turns whatever text arrived so far into the final answer.
+  const handleStop = () => {
+    abortControllerRef.current?.abort();
+    if (continuing) {
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        if (!last) return prev;
+        return [
+          ...prev.slice(0, -1),
+          { ...last, content: last.content + draftAnswer, sources: draftSources.length ? draftSources : last.sources, truncated: false },
+        ];
+      });
+    } else if (draftAnswer.length > 0 || draftSources.length > 0) {
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: draftAnswer, sources: draftSources, citedIndices: undefined, truncated: false, feedback: null },
+      ]);
+    }
+    setIsStreaming(false);
+    setContinuing(false);
     setDraftAnswer("");
     setDraftSources([]);
     scrollToBottom();
-
-    let sourcesForThisTurn: Source[] = [];
-
-    streamQuery(CONTINUATION_PROMPT, sessionId, {
-      onSources: (sid, sources) => {
-        setSessionId(sid);
-        setDraftSources(sources);
-        sourcesForThisTurn = sources;
-        scrollToBottom();
-      },
-      onDelta: (text) => {
-        setDraftAnswer((prev) => prev + text);
-        scrollToBottom();
-      },
-      onDone: (sid, citedIndices, answer, truncated) => {
-        setSessionId(sid);
-        // Concatenated with no separator on purpose — a MAX_TOKENS cutoff can
-        // land mid-word, and the prompt asks Gemini to resume from exactly there.
-        setMessages((prev) => {
-          const last = prev[prev.length - 1];
-          return [
-            ...prev.slice(0, -1),
-            { ...last, content: last.content + answer, sources: sourcesForThisTurn, citedIndices, truncated },
-          ];
-        });
-        setIsStreaming(false);
-        setContinuing(false);
-        setDraftAnswer("");
-        setDraftSources([]);
-        scrollToBottom();
-      },
-      onError: (message) => {
-        setError(message);
-        setIsStreaming(false);
-        setContinuing(false);
-        setDraftAnswer("");
-        scrollToBottom();
-      },
-    });
   };
 
   const handleNewChat = () => {
@@ -206,7 +234,7 @@ function ChatPage() {
       setError(null);
       scrollToBottom();
     } catch {
-      setError("Couldn't load that conversation — it may have expired.");
+      toast.error("Couldn't load that conversation", "It may have expired.");
     }
   };
 
@@ -219,6 +247,7 @@ function ChatPage() {
     setMessages((prev) => prev.map((m, i) => (i === index ? { ...m, feedback: next } : m)));
     setMessageFeedback(sessionId, target.id, next).catch(() => {
       setMessages((prev) => prev.map((m, i) => (i === index ? { ...m, feedback: previous } : m)));
+      toast.error("Couldn't save feedback", "Please try again.");
     });
   };
 
@@ -250,7 +279,7 @@ function ChatPage() {
               <p className="mt-2 text-ink-500">Ask anything about your synced Notion and Jira content.</p>
             </div>
 
-            <ChatInput disabled={isStreaming} onSend={handleSend} />
+            <ChatInput disabled={isStreaming} onSend={handleSend} isStreaming={isStreaming} onStop={handleStop} />
 
             <div className="mt-4 flex flex-wrap justify-center gap-2">
               {SUGGESTIONS.map((s) => (
@@ -289,6 +318,7 @@ function ChatPage() {
                     message={display}
                     onFeedback={(next) => handleFeedback(i, next)}
                     onContinue={isLast && !isStreaming && m.truncated ? handleContinue : undefined}
+                    onRegenerate={isLast && !isStreaming && m.role === "assistant" ? handleRegenerate : undefined}
                     onCitationClick={handleCitationClick}
                   />
                 );
@@ -308,7 +338,7 @@ function ChatPage() {
           </div>
 
           <div className="mx-auto w-full max-w-3xl px-6 pb-6">
-            <ChatInput disabled={isStreaming} onSend={handleSend} />
+            <ChatInput disabled={isStreaming} onSend={handleSend} isStreaming={isStreaming} onStop={handleStop} />
           </div>
         </div>
       )}
@@ -328,15 +358,18 @@ function MessageBubble({
   pending,
   onFeedback,
   onContinue,
+  onRegenerate,
   onCitationClick,
 }: {
   message: ChatMessage;
   pending?: boolean;
   onFeedback?: (feedback: "up" | "down" | null) => void;
   onContinue?: () => void;
+  onRegenerate?: () => void;
   onCitationClick?: (index: number) => void;
 }) {
   const isUser = message.role === "user";
+  const copy = useCopyToClipboard();
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
       <div className="max-w-[85%]">
@@ -366,32 +399,54 @@ function MessageBubble({
           )}
         </div>
 
-        {/* Only assistant turns durably persisted with an id can carry
-            feedback — the currently-streaming draft bubble has neither. */}
-        {!isUser && !pending && message.id && onFeedback && (
+        {!isUser && !pending && (
           <div className="mt-1 flex items-center gap-0.5 px-1">
             <button
               type="button"
-              aria-label="Good response"
-              aria-pressed={message.feedback === "up"}
-              onClick={() => onFeedback(message.feedback === "up" ? null : "up")}
-              className={`rounded-md p-1 transition ${
-                message.feedback === "up" ? "text-coral-500" : "text-ink-600 hover:text-ink-300"
-              }`}
+              aria-label="Copy response"
+              onClick={() => copy(message.content, "Message copied")}
+              className="rounded-md p-1 text-ink-600 transition hover:text-ink-300"
             >
-              <ThumbsUp className="h-3.5 w-3.5" />
+              <Copy01 className="h-3.5 w-3.5" />
             </button>
-            <button
-              type="button"
-              aria-label="Bad response"
-              aria-pressed={message.feedback === "down"}
-              onClick={() => onFeedback(message.feedback === "down" ? null : "down")}
-              className={`rounded-md p-1 transition ${
-                message.feedback === "down" ? "text-coral-500" : "text-ink-600 hover:text-ink-300"
-              }`}
-            >
-              <ThumbsDown className="h-3.5 w-3.5" />
-            </button>
+            {onRegenerate && (
+              <button
+                type="button"
+                aria-label="Regenerate response"
+                onClick={onRegenerate}
+                className="rounded-md p-1 text-ink-600 transition hover:text-ink-300"
+              >
+                <RefreshCw01 className="h-3.5 w-3.5" />
+              </button>
+            )}
+            {/* Only assistant turns durably persisted with an id can carry
+                feedback — the currently-streaming draft bubble has neither. */}
+            {message.id && onFeedback && (
+              <>
+                <button
+                  type="button"
+                  aria-label="Good response"
+                  aria-pressed={message.feedback === "up"}
+                  onClick={() => onFeedback(message.feedback === "up" ? null : "up")}
+                  className={`rounded-md p-1 transition ${
+                    message.feedback === "up" ? "text-coral-500" : "text-ink-600 hover:text-ink-300"
+                  }`}
+                >
+                  <ThumbsUp className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  aria-label="Bad response"
+                  aria-pressed={message.feedback === "down"}
+                  onClick={() => onFeedback(message.feedback === "down" ? null : "down")}
+                  className={`rounded-md p-1 transition ${
+                    message.feedback === "down" ? "text-coral-500" : "text-ink-600 hover:text-ink-300"
+                  }`}
+                >
+                  <ThumbsDown className="h-3.5 w-3.5" />
+                </button>
+              </>
+            )}
           </div>
         )}
       </div>

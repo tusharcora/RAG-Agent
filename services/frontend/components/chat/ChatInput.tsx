@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type KeyboardEvent } from "react";
-import { ArrowUp } from "@untitledui/icons";
+import { ArrowUp, Stop } from "@untitledui/icons";
 import { TextArea } from "@/components/base/textarea/textarea";
 import { Button } from "@/components/base/buttons/button";
 
@@ -14,7 +14,17 @@ import { Button } from "@/components/base/buttons/button";
  * in last) so the surrounding div is the only visible chrome, and the send
  * button is a circular icon button embedded inside it.
  */
-export function ChatInput({ disabled, onSend }: { disabled: boolean; onSend: (question: string) => void }) {
+export function ChatInput({
+  disabled,
+  onSend,
+  isStreaming,
+  onStop,
+}: {
+  disabled: boolean;
+  onSend: (question: string) => void;
+  isStreaming?: boolean;
+  onStop?: () => void;
+}) {
   const [value, setValue] = useState("");
 
   const submit = () => {
@@ -45,14 +55,26 @@ export function ChatInput({ disabled, onSend }: { disabled: boolean; onSend: (qu
         className="flex-1 self-center"
         textAreaClassName="max-h-48 resize-none rounded-none border-0 bg-transparent px-0 py-1.5 shadow-none ring-0 focus:ring-0"
       />
-      <Button
-        color="primary"
-        size="md"
-        isDisabled={disabled || !value.trim()}
-        onPress={submit}
-        iconLeading={ArrowUp}
-        className="shrink-0 self-end rounded-full"
-      />
+      {isStreaming ? (
+        <Button
+          color="secondary"
+          size="md"
+          onPress={onStop}
+          iconLeading={Stop}
+          className="shrink-0 self-end rounded-full"
+          aria-label="Stop generating"
+        />
+      ) : (
+        <Button
+          color="primary"
+          size="md"
+          isDisabled={disabled || !value.trim()}
+          onPress={submit}
+          iconLeading={ArrowUp}
+          className="shrink-0 self-end rounded-full"
+          aria-label="Send"
+        />
+      )}
     </div>
   );
 }

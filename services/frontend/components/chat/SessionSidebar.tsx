@@ -8,6 +8,7 @@ import type { SessionSummary } from "@/lib/types";
 import { Button } from "@/components/base/buttons/button";
 import { Input } from "@/components/base/input/input";
 import { ConfirmDialog } from "@/components/base/modal/confirm-dialog";
+import { SessionListSkeleton } from "@/components/base/skeleton/skeleton";
 import { toast } from "@/lib/toast";
 
 export function SessionSidebar({
@@ -31,6 +32,7 @@ export function SessionSidebar({
   onDeleted?: (sessionId: string) => void;
 }) {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [search, setSearch] = useState("");
   // Debounced separately from `search` so typing doesn't fire a request per
   // keystroke — only the settled value (300ms of no typing) reaches the API.
@@ -43,7 +45,10 @@ export function SessionSidebar({
 
   const refresh = useCallback(() => {
     getSessions(debouncedSearch || undefined)
-      .then(setSessions)
+      .then((res) => {
+        setSessions(res);
+        setLoaded(true);
+      })
       .catch(() => {});
   }, [debouncedSearch]);
 
@@ -90,7 +95,8 @@ export function SessionSidebar({
         <p className="px-2 pb-1 pt-2 text-xs font-medium uppercase tracking-wide text-ink-500">
           Recent conversations
         </p>
-        {sessions.length === 0 && (
+        {!loaded && <SessionListSkeleton />}
+        {loaded && sessions.length === 0 && (
           <p className="px-2 py-2 text-xs text-ink-600">
             {search ? "No conversations match." : "No conversations yet."}
           </p>
