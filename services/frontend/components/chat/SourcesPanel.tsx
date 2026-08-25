@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { SourceIcon } from "@/components/icons/SourceIcon";
 import type { Source } from "@/lib/types";
 
@@ -5,11 +6,23 @@ export function SourcesPanel({
   sources,
   citedIndices,
   isStreaming,
+  highlightedIndex,
 }: {
   sources: Source[];
   citedIndices: number[] | null;
   isStreaming: boolean;
+  // Set by app/page.tsx when a [n] citation marker in an answer is clicked —
+  // scrolls the matching source card into view and flashes it, so the
+  // citation markers (previously wired to nothing) actually do something.
+  highlightedIndex?: number | null;
 }) {
+  const cardRefs = useRef(new Map<number, HTMLAnchorElement>());
+
+  useEffect(() => {
+    if (highlightedIndex == null) return;
+    cardRefs.current.get(highlightedIndex)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [highlightedIndex]);
+
   if (sources.length === 0) {
     return (
       <aside className="w-80 shrink-0 border-l border-ink-800 bg-ink-900/40 p-4">
@@ -32,7 +45,15 @@ export function SourcesPanel({
           <p className="mb-2 text-xs font-medium text-gold-400">Cited in answer</p>
           <div className="space-y-2">
             {cited.map((s) => (
-              <SourceCard key={s.index} source={s} cited />
+              <SourceCard
+                key={s.index}
+                source={s}
+                cited
+                highlighted={highlightedIndex === s.index}
+                registerRef={(el) => {
+                  if (el) cardRefs.current.set(s.index, el);
+                }}
+              />
             ))}
           </div>
         </div>
@@ -47,7 +68,15 @@ export function SourcesPanel({
         )}
         <div className="space-y-2">
           {uncited.map((s) => (
-            <SourceCard key={s.index} source={s} cited={false} />
+            <SourceCard
+              key={s.index}
+              source={s}
+              cited={false}
+              highlighted={highlightedIndex === s.index}
+              registerRef={(el) => {
+                if (el) cardRefs.current.set(s.index, el);
+              }}
+            />
           ))}
         </div>
       </div>
@@ -55,15 +84,26 @@ export function SourcesPanel({
   );
 }
 
-function SourceCard({ source, cited }: { source: Source; cited: boolean }) {
+function SourceCard({
+  source,
+  cited,
+  highlighted,
+  registerRef,
+}: {
+  source: Source;
+  cited: boolean;
+  highlighted?: boolean;
+  registerRef?: (el: HTMLAnchorElement | null) => void;
+}) {
   return (
     <a
+      ref={registerRef}
       href={source.url}
       target="_blank"
       rel="noreferrer"
       className={`block rounded-xl border p-2.5 text-xs transition hover:border-ink-600 ${
         cited ? "border-gold-400/30 bg-gold-400/5" : "border-ink-800 bg-ink-900/60"
-      }`}
+      } ${highlighted ? "ring-2 ring-gold-400" : ""}`}
     >
       <div className="mb-1 flex items-center gap-1.5">
         <span

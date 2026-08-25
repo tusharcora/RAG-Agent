@@ -12,8 +12,14 @@ interface StreamCallbacks {
  * Hand-rolled SSE parsing over fetch()'s ReadableStream — EventSource can't
  * be used since it only supports GET with no request body, and /query needs
  * a POST body (the question).
+ *
+ * `signal` lets the caller cut off a stream mid-answer (a "Stop" button).
+ * Once a `delta` may already be on the wire there's no way to ask the server
+ * to stop cleanly, so an abort is just a client-side read cancellation — the
+ * caller is responsible for turning whatever text arrived before the abort
+ * into a final answer; no onDone/onError fires for an aborted call.
  */
-export async function streamQuery(question: string, sessionId: string | null, cb: StreamCallbacks): Promise<void> {
+export async function streamQuery(question: string, sessionId: string | null, cb: StreamCallbacks, signal?: AbortSignal): Promise<void> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
 
   let res: Response;
@@ -23,8 +29,10 @@ export async function streamQuery(question: string, sessionId: string | null, cb
       headers,
       body: JSON.stringify({ question, session_id: sessionId }),
       credentials: "include",
+      signal,
     });
   } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") return;
     cb.onError(err instanceof Error ? err.message : "Network error reaching the API");
     return;
   }
@@ -43,18 +51,23 @@ export async function streamQuery(question: string, sessionId: string | null, cb
   const decoder = new TextDecoder("utf-8");
   let buffer = "";
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
 
-    let boundary = buffer.indexOf("\n\n");
-    while (boundary !== -1) {
-      const rawEvent = buffer.slice(0, boundary);
-      buffer = buffer.slice(boundary + 2);
-      dispatch(rawEvent, cb);
-      boundary = buffer.indexOf("\n\n");
+      let boundary = buffer.indexOf("\n\n");
+      while (boundary !== -1) {
+        const rawEvent = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        dispatch(rawEvent, cb);
+        boundary = buffer.indexOf("\n\n");
+      }
     }
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") return;
+    cb.onError(err instanceof Error ? err.message : "Stream interrupted");
   }
 }
 

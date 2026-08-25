@@ -5,6 +5,7 @@ import { getDlqEvents, redriveDlqEvent } from "@/lib/api";
 import { useInterval } from "@/hooks/useInterval";
 import { Button } from "@/components/base/buttons/button";
 import { Table, TableCard } from "@/components/application/table/table";
+import { toast } from "@/lib/toast";
 import type { DlqEvent } from "@/lib/types";
 
 // Owner/admin only — matches the ConnectionCard pattern (components/connections/ConnectionCard.tsx)
@@ -30,10 +31,14 @@ export function DlqPanel() {
       // The redrive creates a NEW event_log row and leaves this one's status
       // at dead_lettered (see dlq.py) — it never disappears from GET /dlq on
       // its own, so track "already redriven" client-side instead of waiting
-      // on a poll that will never reflect it.
+      // on a poll that will never reflect it. This client-only Set is not
+      // durable (a refresh, or a second admin, won't see it) — that needs a
+      // backend field on the event, tracked separately.
       setRedrivenIds((prev) => new Set(prev).add(id));
+      toast.success("Event redriven");
     } catch {
       // leave the row as-is — the button resets and the admin can retry
+      toast.error("Couldn't redrive this event", "Please try again.");
     } finally {
       setRedrivingId(null);
     }

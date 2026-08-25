@@ -9,6 +9,7 @@ import { DlqPanel } from "@/components/activity/DlqPanel";
 import { StatTile } from "@/components/StatTile";
 import { TableCard } from "@/components/application/table/table";
 import { NativeSelect } from "@/components/base/select/select-native";
+import { TableRowsSkeleton } from "@/components/base/skeleton/skeleton";
 import type { EventLogEntry } from "@/lib/types";
 
 const STATUSES = ["received", "processing", "succeeded", "failed", "dead_lettered"];
@@ -17,12 +18,16 @@ const STATUS_OPTIONS = [{ label: "All statuses", value: "" }, ...STATUSES.map((s
 export default function ActivityPage() {
   const [events, setEvents] = useState<EventLogEntry[]>([]);
   const [status, setStatus] = useState("");
+  const [loaded, setLoaded] = useState(false);
   const { user } = useAuth();
   const isAdmin = user?.role === "owner" || user?.role === "admin";
 
   const refresh = useCallback(() => {
     getEvents({ limit: 100, status: status || undefined })
-      .then(setEvents)
+      .then((res) => {
+        setEvents(res);
+        setLoaded(true);
+      })
       .catch(() => {});
   }, [status]);
 
@@ -62,7 +67,7 @@ export default function ActivityPage() {
           }
         />
         <div className="overflow-x-auto">
-          <EventTable events={events} />
+          {loaded ? <EventTable events={events} /> : <TableRowsSkeleton columns={6} />}
         </div>
       </TableCard.Root>
 

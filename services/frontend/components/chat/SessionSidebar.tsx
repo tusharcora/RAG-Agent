@@ -1,13 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Dialog, Modal, ModalOverlay } from "react-aria-components";
 import { Plus, SearchLg, Trash01 } from "@untitledui/icons";
 import { deleteSession, getSessions } from "@/lib/api";
 import { useInterval } from "@/hooks/useInterval";
 import type { SessionSummary } from "@/lib/types";
 import { Button } from "@/components/base/buttons/button";
 import { Input } from "@/components/base/input/input";
+import { ConfirmDialog } from "@/components/base/modal/confirm-dialog";
+import { SessionListSkeleton } from "@/components/base/skeleton/skeleton";
+import { toast } from "@/lib/toast";
 
 export function SessionSidebar({
   activeSessionId,
@@ -30,6 +32,7 @@ export function SessionSidebar({
   onDeleted?: (sessionId: string) => void;
 }) {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [search, setSearch] = useState("");
   // Debounced separately from `search` so typing doesn't fire a request per
   // keystroke — only the settled value (300ms of no typing) reaches the API.
@@ -42,7 +45,10 @@ export function SessionSidebar({
 
   const refresh = useCallback(() => {
     getSessions(debouncedSearch || undefined)
-      .then(setSessions)
+      .then((res) => {
+        setSessions(res);
+        setLoaded(true);
+      })
       .catch(() => {});
   }, [debouncedSearch]);
 
@@ -65,7 +71,10 @@ export function SessionSidebar({
     setPendingDelete(null);
     deleteSession(sessionId)
       .then(() => onDeleted?.(sessionId))
-      .catch(() => setSessions(previous));
+      .catch(() => {
+        setSessions(previous);
+        toast.error("Couldn't delete conversation", "Please try again.");
+      });
   };
 
   return (
@@ -86,7 +95,8 @@ export function SessionSidebar({
         <p className="px-2 pb-1 pt-2 text-xs font-medium uppercase tracking-wide text-ink-500">
           Recent conversations
         </p>
-        {sessions.length === 0 && (
+        {!loaded && <SessionListSkeleton />}
+        {loaded && sessions.length === 0 && (
           <p className="px-2 py-2 text-xs text-ink-600">
             {search ? "No conversations match." : "No conversations yet."}
           </p>
@@ -125,33 +135,15 @@ export function SessionSidebar({
         </ul>
       </div>
 
-      <ModalOverlay
+      <ConfirmDialog
         isOpen={pendingDelete !== null}
         onOpenChange={(open) => !open && setPendingDelete(null)}
-        isDismissable
-        className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
-      >
-        <Modal>
-          <Dialog
-            className="cyber-chamfer-sm w-80 rounded-xl border border-ink-800 bg-ink-900 p-4 shadow-panel outline-none"
-            aria-label="Delete conversation"
-          >
-            <p className="text-sm font-semibold text-ink-100">Delete this conversation?</p>
-            <p className="mt-1.5 line-clamp-2 text-sm text-ink-400">
-              {pendingDelete?.preview || "Untitled conversation"}
-            </p>
-            <p className="mt-2 text-xs text-ink-600">This can't be undone.</p>
-            <div className="mt-4 flex justify-end gap-2">
-              <Button color="secondary" size="sm" onPress={() => setPendingDelete(null)}>
-                Cancel
-              </Button>
-              <Button color="primary-destructive" size="sm" onPress={confirmDelete}>
-                Delete
-              </Button>
-            </div>
-          </Dialog>
-        </Modal>
-      </ModalOverlay>
+        title="Delete this conversation?"
+        description={`${pendingDelete?.preview || "Untitled conversation"} — this can't be undone.`}
+        confirmLabel="Delete"
+        isDestructive
+        onConfirm={confirmDelete}
+      />
     </aside>
   );
 }
