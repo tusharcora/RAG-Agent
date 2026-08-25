@@ -51,11 +51,13 @@ export default function Nav() {
         {user ? (
           <Dropdown.Root>
             <Button color="tertiary" size="sm" className="gap-2 pr-2">
-              <span className="hidden text-ink-400 sm:inline">
-                {user.display_name || user.email} <span className="text-ink-700">·</span>{" "}
-                <span className="capitalize text-gold-400">{user.role}</span>
+              <span className="flex items-center gap-2">
+                <span className="hidden text-ink-400 sm:inline">
+                  {user.display_name || user.email} <span className="text-ink-700">·</span>{" "}
+                  <span className="capitalize text-gold-400">{user.role}</span>
+                </span>
+                <Avatar size="xs" initials={(user.display_name || user.email).slice(0, 1).toUpperCase()} />
               </span>
-              <Avatar size="xs" initials={(user.display_name || user.email).slice(0, 1).toUpperCase()} />
             </Button>
 
             <Dropdown.Popover className="w-72">
