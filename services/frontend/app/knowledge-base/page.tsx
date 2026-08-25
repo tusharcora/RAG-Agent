@@ -157,15 +157,14 @@ export default function KnowledgeBasePage() {
         </TableCard.Root>
       </div>
 
-      {openId && (
-        <DocumentDetailDrawer
-          documentId={openId}
-          onClose={() => setOpenId(null)}
-          onExcludedChange={(excluded) =>
-            setDocuments((prev) => prev.map((d) => (d.id === openId ? { ...d, excluded_from_retrieval: excluded } : d)))
-          }
-        />
-      )}
+      <DocumentDetailDrawer
+        isOpen={openId !== null}
+        documentId={openId}
+        onClose={() => setOpenId(null)}
+        onExcludedChange={(excluded) =>
+          setDocuments((prev) => prev.map((d) => (d.id === openId ? { ...d, excluded_from_retrieval: excluded } : d)))
+        }
+      />
     </div>
   );
 }

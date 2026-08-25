@@ -8,16 +8,23 @@ import { Badge } from "@/components/base/badges/badges";
 import { Toggle } from "@/components/base/toggle/toggle";
 import { ErrorState } from "@/components/base/error-state/error-state";
 import { DocumentDrawerSkeleton } from "@/components/base/skeleton/skeleton";
+import { Modal } from "@/components/base/modal/modal";
 import { useAuth } from "@/lib/auth-context";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import type { DocumentDetail } from "@/lib/types";
 
 export function DocumentDetailDrawer({
+  isOpen,
   documentId,
   onClose,
   onExcludedChange,
 }: {
-  documentId: string;
+  // Rendered unconditionally by the parent (rather than only-while-open) so
+  // the ModalOverlay's exit animation gets a chance to play — a conditionally
+  // *mounted* component gets yanked from the tree instantly, before react-aria
+  // can run the close transition.
+  isOpen: boolean;
+  documentId: string | null;
   onClose: () => void;
   onExcludedChange?: (excluded: boolean) => void;
 }) {
@@ -30,6 +37,7 @@ export function DocumentDetailDrawer({
   const isAdmin = user?.role === "owner" || user?.role === "admin";
 
   const load = () => {
+    if (!documentId) return;
     setDetail(null);
     setError(false);
     getDocument(documentId)
@@ -44,7 +52,7 @@ export function DocumentDetailDrawer({
   }, [documentId]);
 
   async function handleExcludedChange(excluded: boolean) {
-    if (!detail) return;
+    if (!detail || !documentId) return;
     setSavingExcluded(true);
     try {
       await setDocumentExcluded(documentId, excluded);
@@ -65,7 +73,13 @@ export function DocumentDetailDrawer({
   }
 
   return (
-    <aside className="w-[28rem] shrink-0 overflow-y-auto border-l border-ink-800 bg-ink-900/40 p-4">
+    <Modal
+      isOpen={isOpen}
+      onOpenChange={(open) => !open && onClose()}
+      variant="drawer"
+      className="bg-ink-900/95 p-4"
+      aria-label={detail?.title || "Document detail"}
+    >
       <div className="mb-3 flex items-start justify-between gap-2">
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold text-ink-100">{detail?.title ?? (error ? "Couldn't load" : "Loading…")}</p>
@@ -146,6 +160,6 @@ export function DocumentDetailDrawer({
           })}
         </div>
       )}
-    </aside>
+    </Modal>
   );
 }
