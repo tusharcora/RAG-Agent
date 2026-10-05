@@ -2,7 +2,9 @@
 
 import { createContext, useContext, useEffect, useState } from "react";
 
-export type Theme = "dark" | "cyberpunk";
+export type Theme = "light" | "dark" | "cyberpunk";
+
+const VALID_THEMES: Theme[] = ["light", "dark", "cyberpunk"];
 
 interface ThemeState {
   theme: Theme;
@@ -18,11 +20,17 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const stored = window.localStorage.getItem(STORAGE_KEY);
-    if (stored === "cyberpunk") setThemeState("cyberpunk");
+    if (VALID_THEMES.includes(stored as Theme)) setThemeState(stored as Theme);
   }, []);
 
   useEffect(() => {
-    document.documentElement.classList.toggle("theme-cyberpunk", theme === "cyberpunk");
+    const root = document.documentElement;
+    // "cyberpunk" is a skin layered on top of the dark palette (see
+    // styles/cyberpunk.css), not an independent fourth palette — it always
+    // carries dark-mode along with it. "light" is genuinely independent.
+    root.classList.toggle("dark-mode", theme === "dark" || theme === "cyberpunk");
+    root.classList.toggle("light-mode", theme === "light");
+    root.classList.toggle("theme-cyberpunk", theme === "cyberpunk");
   }, [theme]);
 
   function setTheme(next: Theme) {

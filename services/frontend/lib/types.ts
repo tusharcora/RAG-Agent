@@ -113,3 +113,21 @@ export interface DlqEvent {
   error: string | null;
   created_at: string;
 }
+
+export interface InviteResult {
+  token: string;
+  expires_at: string;
+}
+
+export interface ServiceTokenSummary {
+  id: string;
+  label: string;
+  created_at: string;
+  revoked_at: string | null;
+}
+
+export interface ServiceTokenCreated {
+  id: string;
+  label: string;
+  token: string; // plaintext, shown once — only the hash is persisted server-side
+}

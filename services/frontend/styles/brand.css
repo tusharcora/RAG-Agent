@@ -97,3 +97,43 @@
     --shadow-panel: 0 1px 2px 0 rgb(0 0 0 / 0.4), 0 0 0 1px rgb(255 255 255 / 0.04);
     --shadow-glow: 0 0 40px -8px rgb(232 70 74 / 0.35);
 }
+
+/*
+ * LIGHT MODE VARIABLES
+ *
+ * Fast palette swap (a deliberate scope decision, not a full redesign):
+ * only the ink color scale is inverted here, since that is the raw palette
+ * hand written screen markup (app/page.tsx, ConnectionCard.tsx,
+ * DocumentTable.tsx, EventTable.tsx, etc.) uses directly. The Untitled UI
+ * semantic tokens (bg primary, text secondary, etc., used by
+ * components/base and components/application/table) already have real
+ * light mode defaults in styles/theme.css un-prefixed root block; they were
+ * simply dead code before, since dark mode used to be hardcoded
+ * unconditionally on the html element. Now that lib/theme-context.tsx only
+ * applies dark mode for the dark and cyberpunk themes, those tokens pick up
+ * their real light values for free.
+ *
+ * This is a straightforward inversion of the dark ink scale (950 becomes
+ * the lightest step, 900 becomes the next lightest, and so on down to 50
+ * becoming the darkest step), not a from scratch light palette. Treat this
+ * as a first pass expected to surface a punch list, not a finished light
+ * theme: shadow panel and shadow glow above, plus the gold and coral accent
+ * scale, were tuned for contrast against a dark backdrop and have not been
+ * re-checked against light backgrounds on every screen yet.
+ */
+@layer base {
+    .light-mode {
+        --color-ink-950: #fafafa;
+        --color-ink-900: #f2f2f4;
+        --color-ink-850: #ececef;
+        --color-ink-800: #e2e2e6;
+        --color-ink-700: #d3d3d9;
+        --color-ink-600: #b3b3bc;
+        --color-ink-500: #6b6b75;
+        --color-ink-400: #55555f;
+        --color-ink-300: #3d3d45;
+        --color-ink-200: #26262b;
+        --color-ink-100: #131316;
+        --color-ink-50: #0a0a0d;
+    }
+}

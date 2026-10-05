@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { LogOut01, Settings01, Zap } from "@untitledui/icons";
 import { useAuth } from "@/lib/auth-context";
-import { useTheme } from "@/lib/theme-context";
+import { useTheme, type Theme } from "@/lib/theme-context";
 import { Avatar } from "@/components/base/avatar/avatar";
 import { Button } from "@/components/base/buttons/button";
 import { Dropdown } from "@/components/base/dropdown/dropdown";
@@ -16,11 +16,20 @@ const LINKS = [
   { href: "/activity", label: "Activity" },
 ];
 
+// A single dropdown item can't offer 3 independent choices without a
+// submenu, so it cycles: light -> dark -> cyberpunk -> light. The full
+// 3-way picker lives on the Settings page (components/ThemeToggle.tsx).
+const THEME_CYCLE: Theme[] = ["light", "dark", "cyberpunk"];
+const THEME_LABEL: Record<Theme, string> = { light: "light", dark: "standard", cyberpunk: "cyberpunk" };
+
+function nextTheme(current: Theme): Theme {
+  return THEME_CYCLE[(THEME_CYCLE.indexOf(current) + 1) % THEME_CYCLE.length];
+}
+
 export default function Nav() {
   const pathname = usePathname();
   const { user, logout } = useAuth();
   const { theme, setTheme } = useTheme();
-  const isCyberpunk = theme === "cyberpunk";
 
   return (
     <nav className="cyber-glow-sm flex items-center gap-1 border-b border-ink-800 bg-ink-950/90 px-4 py-3 backdrop-blur">
@@ -34,12 +43,20 @@ export default function Nav() {
       {user &&
         LINKS.map((link) => {
           const active = pathname === link.href;
+          // coral-300 is tuned for contrast against a dark pill background —
+          // on light mode the same translucent bg-coral-500/15 is nearly
+          // white, so that light text reads as almost invisible. Found by
+          // eye during the light-theme first pass; the other coral-300/400
+          // "highlighted text on a translucent coral chip" spots (e.g.
+          // SessionSidebar's active-conversation row) have the same issue
+          // and are follow-up, not fixed here.
+          const activeClass = theme === "light" ? "bg-coral-500/15 text-coral-700" : "bg-coral-500/15 text-coral-300";
           return (
             <Link
               key={link.href}
               href={link.href}
               className={`rounded-full px-3 py-1.5 text-sm transition ${
-                active ? "bg-coral-500/15 text-coral-300" : "text-ink-400 hover:bg-ink-800/60 hover:text-ink-200"
+                active ? activeClass : "text-ink-400 hover:bg-ink-800/60 hover:text-ink-200"
               }`}
             >
               {link.label}
@@ -78,8 +95,8 @@ export default function Nav() {
                 <Dropdown.Item icon={Settings01} href="/settings">
                   Settings
                 </Dropdown.Item>
-                <Dropdown.Item icon={Zap} onAction={() => setTheme(isCyberpunk ? "dark" : "cyberpunk")}>
-                  {isCyberpunk ? "Switch to standard theme" : "Switch to cyberpunk theme"}
+                <Dropdown.Item icon={Zap} onAction={() => setTheme(nextTheme(theme))}>
+                  Switch to {THEME_LABEL[nextTheme(theme)]} theme
                 </Dropdown.Item>
 
                 <Dropdown.Separator />

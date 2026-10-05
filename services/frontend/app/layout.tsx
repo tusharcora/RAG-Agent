@@ -15,28 +15,31 @@ export const metadata = {
   description: "Notion/Jira-synced retrieval agent with citation tracing",
 };
 
-// Applies the persisted theme choice before hydration so there is no
-// flash of the wrong theme. theme-cyberpunk is never part of the SSR
-// className (that would mismatch this client-only localStorage read).
+// Applies the persisted theme choice before hydration so there is no flash
+// of the wrong theme — none of dark-mode/light-mode/theme-cyberpunk are part
+// of the SSR className (that would mismatch this client-only localStorage
+// read), so the very first paint has no theme class at all and falls back to
+// the dark values baked into styles/brand.css's @theme block until this runs.
 const THEME_INIT_SCRIPT = `
 try {
-  if (window.localStorage.getItem("theme") === "cyberpunk") {
-    document.documentElement.classList.add("theme-cyberpunk");
+  var t = window.localStorage.getItem("theme");
+  var root = document.documentElement;
+  if (t === "light") {
+    root.classList.add("light-mode");
+  } else {
+    root.classList.add("dark-mode");
+    if (t === "cyberpunk") root.classList.add("theme-cyberpunk");
   }
-} catch (e) {}
+} catch (e) {
+  document.documentElement.classList.add("dark-mode");
+}
 `;
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    // dark-mode is a real class Untitled UI's theme.css keys its dark-palette
-    // overrides off (see styles/theme.css's ".dark-mode" block) — this app has
-    // no light-mode toggle, so it's forced on unconditionally here rather than
-    // wired to a theme switcher that doesn't exist. theme-cyberpunk layers on
-    // top of it (see styles/cyberpunk.css) and is toggled client-side only,
-    // by ThemeProvider and the inline script below.
     <html
       lang="en"
-      className={`${inter.variable} ${orbitron.variable} ${jetbrainsMono.variable} ${shareTechMono.variable} dark-mode`}
+      className={`${inter.variable} ${orbitron.variable} ${jetbrainsMono.variable} ${shareTechMono.variable}`}
       suppressHydrationWarning
     >
       <head>
