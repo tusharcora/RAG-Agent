@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.crypto import decrypt_token, encrypt_token
+from app.integrations import broker
 from app.models.rag import OAuthConnection
 
 logger = logging.getLogger(__name__)
@@ -44,18 +45,27 @@ async def ensure_fresh_token(session: AsyncSession, connection: OAuthConnection)
         return access_token
 
     logger.info("Refreshing Jira access token for connection %s", connection.id)
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            JIRA_TOKEN_URL,
-            json={
-                "grant_type": "refresh_token",
-                "client_id": settings.jira_client_id,
-                "client_secret": settings.jira_client_secret,
-                "refresh_token": refresh_token,
-            },
-        )
-        resp.raise_for_status()
-        data = resp.json()
+    if settings.app_mode == "desktop":
+        # The desktop app has no OAuth client secret; the sign-in Worker holds it.
+        try:
+            data = await broker.refresh_jira(refresh_token)
+        except broker.BrokerRefused:
+            raise HTTPException(status_code=400, detail="Jira needs reconnecting. Use Reconnect on the Connections page.")
+        except broker.BrokerUnavailable:
+            raise HTTPException(status_code=502, detail=broker.UNREACHABLE)
+    else:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                JIRA_TOKEN_URL,
+                json={
+                    "grant_type": "refresh_token",
+                    "client_id": settings.jira_client_id,
+                    "client_secret": settings.jira_client_secret,
+                    "refresh_token": refresh_token,
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
 
     new_access_token = data["access_token"]
     new_refresh_token = data.get("refresh_token", refresh_token)

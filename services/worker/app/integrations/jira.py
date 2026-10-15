@@ -8,6 +8,7 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 from app.core.config import settings
 from app.core.crypto import decrypt_token, encrypt_token
 from app.core.db import get_session
+from app.integrations import broker
 from app.models.rag import OAuthConnection
 
 logger = logging.getLogger(__name__)
@@ -87,18 +88,26 @@ async def _ensure_fresh_token(connection: OAuthConnection) -> str:
         return access_token
 
     logger.info("Refreshing Jira access token for connection %s", connection.id)
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            JIRA_TOKEN_URL,
-            json={
-                "grant_type": "refresh_token",
-                "client_id": settings.jira_client_id,
-                "client_secret": settings.jira_client_secret,
-                "refresh_token": refresh_token,
-            },
-        )
-        resp.raise_for_status()
-        data = resp.json()
+    if settings.app_mode == "desktop":
+        # The desktop app has no OAuth client secret; the sign-in Worker holds it.
+        try:
+            data = await broker.refresh_jira(refresh_token)
+        except broker.BrokerRefused:
+            # BrokerUnavailable propagates: the event retries, then dead-letters.
+            raise RuntimeError("Jira needs reconnecting. Use Reconnect on the Connections page.")
+    else:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                JIRA_TOKEN_URL,
+                json={
+                    "grant_type": "refresh_token",
+                    "client_id": settings.jira_client_id,
+                    "client_secret": settings.jira_client_secret,
+                    "refresh_token": refresh_token,
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
 
     new_access_token = data["access_token"]
     new_refresh_token = data.get("refresh_token", refresh_token)  # Atlassian rotates refresh tokens
