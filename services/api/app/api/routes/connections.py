@@ -275,7 +275,15 @@ class NotionTokenRequest(BaseModel):
     token: str
 
 
-@router.post("/notion/token")
+def _desktop_only() -> None:
+    if settings.app_mode != "desktop":
+        raise HTTPException(status_code=404, detail="Not found")
+
+
+# Desktop only: server deployments keep the documented OAuth-only model, so an
+# org admin there can't swap an OAuth connection for an internal-integration
+# secret.
+@router.post("/notion/token", dependencies=[Depends(_desktop_only)])
 async def connect_notion_with_token(
     request: NotionTokenRequest,
     auth: AuthContext = Depends(require_auth),
