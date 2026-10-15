@@ -38,8 +38,12 @@ export function KeysStep({ onBack, onDone }: { onBack: () => void; onDone: () =>
       });
       onDone();
     } catch (e) {
-      if (e instanceof SetupFieldError && (e.field === "voyage_api_key" || e.field === "api_key" || e.field === "model")) {
+      const rendered = e instanceof SetupFieldError && (e.field === "voyage_api_key" || e.field === "api_key" || (e.field === "model" && current.defaultModel !== null));
+      if (e instanceof SetupFieldError && rendered) {
         setErrors({ [e.field]: e.fieldMessage });
+      } else if (e instanceof SetupFieldError) {
+        // The named input isn't on screen (e.g. model with Gemini): show it as a general error.
+        setErrors({ form: e.fieldMessage });
       } else {
         setErrors({ form: (e as { detail?: string }).detail || (e instanceof Error ? e.message : "Couldn't check your keys.") });
       }

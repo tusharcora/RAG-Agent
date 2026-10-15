@@ -80,7 +80,7 @@ export async function pullModel(model: string, onProgress: (p: PullProgress) => 
     } catch {
       return;
     }
-    if (name === "progress") onProgress({ completed: parsed.completed, total: parsed.total, status: parsed.status ?? "" });
+    if (name === "progress") onProgress({ completed: parsed.completed || undefined, total: parsed.total || undefined, status: parsed.status ?? "" });
     else if (name === "done") outcome = "done";
     else if (name === "error") outcome = new Error(parsed.message ?? "Download failed");
   };
