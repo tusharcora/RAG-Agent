@@ -44,21 +44,46 @@ CLAIM_SQL = text(
 )
 
 
+STALE_ERROR = "worker stopped while processing this job"
+
+# A row whose attempts already exceed max_retries is dead-lettered instead of
+# requeued: a job that kills the worker process outright (out of memory, a
+# native crash) would otherwise be claimed and crash it again on every launch.
+# The threshold matches _process (attempts - 1 >= max_retries).
+DEAD_LETTER_STALE_SQL = text(
+    "UPDATE event_log SET status = 'dead_lettered', error = :error, updated_at = now()"
+    " WHERE status = 'processing' AND attempts > :max_retries"
+    " RETURNING dedupe_key"
+)
 REQUEUE_STALE_SQL = text(
     "UPDATE event_log SET status = 'received', available_at = now(), updated_at = now()"
-    " WHERE status = 'processing'"
+    " WHERE status = 'processing' RETURNING dedupe_key"
 )
 
 
 async def requeue_stale(session) -> int:
     """Put jobs left 'processing' by a worker that died mid-job (app quit,
     crash, restart after setup) back in the queue, and commit. Returns how
-    many. Desktop runs exactly one worker, so at startup nothing else can
-    legitimately hold a 'processing' row; with several workers sharing the
-    table this would steal live jobs and would need a lease/heartbeat instead."""
-    result = await session.execute(REQUEUE_STALE_SQL)
+    many were requeued. Rows already past max_retries are dead-lettered
+    instead (redrivable from the Activity page). Desktop runs exactly one
+    worker, so at startup nothing else can legitimately hold a 'processing'
+    row; with several workers sharing the table this would steal live jobs
+    and would need a lease/heartbeat instead.
+
+    Dedupe claims are released for every stale row, as _process does on
+    failure, so neither the retry nor a later redrive is skipped as a false
+    duplicate."""
+    dead = (
+        await session.execute(DEAD_LETTER_STALE_SQL, {"error": STALE_ERROR, "max_retries": settings.max_retries})
+    ).scalars().all()
+    requeued = (await session.execute(REQUEUE_STALE_SQL)).scalars().all()
     await session.commit()
-    return result.rowcount
+    for dedupe_key in [*dead, *requeued]:
+        if dedupe_key:
+            await clear_dedupe(dedupe_key)
+    if dead:
+        logger.error("Dead-lettered %s job(s) the worker stopped during, past max_retries", len(dead))
+    return len(requeued)
 
 
 async def _finish(event_id, status: str, error: str | None = None, retry_in: float | None = None) -> None:
