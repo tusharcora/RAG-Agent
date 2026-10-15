@@ -20,3 +20,14 @@ def test_save_secrets_merges_and_is_private(tmp_path, monkeypatch):
     assert json.loads((tmp_path / "secrets.json").read_text()) == {"jwt_secret": "x", "voyage_api_key": "k"}
     if os.name != "nt":
         assert stat.S_IMODE((tmp_path / "secrets.json").stat().st_mode) == 0o600
+
+
+def test_save_secrets_refuses_to_overwrite_corrupt_file(tmp_path, monkeypatch):
+    import pytest
+
+    monkeypatch.setattr(settings, "desktop_data_dir", str(tmp_path))
+    path = tmp_path / "secrets.json"
+    path.write_bytes(b'{"jwt_secret": "x", ')
+    with pytest.raises(ValueError):
+        desktop_state.save_secrets(voyage_api_key="k")
+    assert path.read_bytes() == b'{"jwt_secret": "x", '

@@ -55,7 +55,16 @@ def save_config(**changes) -> None:
 def save_secrets(**changes) -> None:
     """Merge into secrets.json (owner-only). The launcher creates the file with
     the generated secrets; never drop what is already there."""
-    values = {**_read(_home() / "secrets.json"), **changes}
+    path = _home() / "secrets.json"
+    try:
+        existing = json.loads(path.read_text())
+    except FileNotFoundError:
+        existing = {}
+    # Any other failure (unreadable, corrupt) raises: overwriting would drop
+    # the generated jwt_secret / token_encryption_key.
+    if not isinstance(existing, dict):
+        raise ValueError("secrets.json is not a JSON object")
+    values = {**existing, **changes}
     _atomic_write(_home() / "secrets.json", json.dumps(values, indent=2), private=True)
 
 
