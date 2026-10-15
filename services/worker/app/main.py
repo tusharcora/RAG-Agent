@@ -126,7 +126,10 @@ async def main() -> None:
     await init_engine()
 
     if settings.queue_backend == "postgres":
+        from app.core.launcher_watch import exit_when_launcher_exits
         from app.local_queue import run as run_local_queue
+
+        exit_when_launcher_exits()  # never outlive the desktop launcher
 
         await run_local_queue()
         return

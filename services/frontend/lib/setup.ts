@@ -158,7 +158,9 @@ export async function waitForRestart(): Promise<void> {
   while (true) {
     let ok = false;
     try {
-      const res = await fetch(`${API_BASE}/health`, { cache: "no-store" });
+      // Bounded: a backend that accepts the connection but never answers
+      // must still count as "not back yet" rather than hang this loop.
+      const res = await fetch(`${API_BASE}/health`, { cache: "no-store", signal: AbortSignal.timeout(3000) });
       ok = res.ok;
     } catch {
       ok = false;
@@ -168,7 +170,9 @@ export async function waitForRestart(): Promise<void> {
       if (sawFailure || elapsed >= HEALTH_STEADY_MS) return;
     } else {
       sawFailure = true;
-      if (elapsed >= HEALTH_GIVE_UP_MS) throw new Error("The app didn't come back after restarting.");
+      if (elapsed >= HEALTH_GIVE_UP_MS) throw new Error(
+          "The app didn't come back after restarting. Your setup is saved: quit Knowledge Agent (or close its Terminal window) and start it again.",
+        );
     }
     await new Promise((r) => setTimeout(r, HEALTH_POLL_MS));
   }

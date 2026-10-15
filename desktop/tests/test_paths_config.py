@@ -206,3 +206,35 @@ def test_child_env_maps_saved_embed_model(tmp_path, monkeypatch):
     desktop_config.save(tmp_path, ollama_embed_model="nomic-embed-text:v1.5")
     env = launcher.child_env("http://127.0.0.1:1", "postgresql://u@/db", tmp_path, paths)
     assert env["OLLAMA_EMBED_MODEL"] == "nomic-embed-text:v1.5"
+
+
+def test_child_env_passes_launcher_pid(tmp_path):
+    env = launcher.child_env("http://127.0.0.1:1", "postgresql://u@/db", tmp_path, launcher.resolve_paths(None))
+    assert env["KA_LAUNCHER_PID"] == str(os.getpid())
+
+
+def test_database_stops_even_after_a_killed_launcher(tmp_path):
+    """A hard-killed launcher leaves its pid in pgserver's handle list, and
+    pgserver then never stops Postgres for later launchers. Dead entries are
+    dropped at start, so a normal stop shuts Postgres down again."""
+    import json as _json
+    import shutil
+    import subprocess as _sp
+    import tempfile
+
+    home = Path(tempfile.mkdtemp(dir="/tmp"))  # pgserver drops to its own user as root
+    os.chmod(home, 0o755)
+    try:
+        dead = _sp.Popen([sys.executable, "-c", "pass"])
+        dead.wait()
+        db, _ = launcher.start_database(home)  # create the cluster
+        db.cleanup()
+        # As if an earlier launcher had been killed while holding a handle.
+        (home / "pgdata" / ".handle_pids.json").write_text(_json.dumps([dead.pid]))
+        db, _ = launcher.start_database(home)
+        postmaster = home / "pgdata" / "postmaster.pid"
+        assert postmaster.exists()
+        db.cleanup()
+        assert not postmaster.exists(), "Postgres kept running after the launcher stopped it"
+    finally:
+        shutil.rmtree(home, ignore_errors=True)

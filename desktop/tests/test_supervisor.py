@@ -168,3 +168,83 @@ def test_lifeline_eof_stops_cleanly(tmp_path):
         if proc.poll() is None:
             proc.kill()
             proc.wait()
+
+
+def test_sighup_stops_cleanly(tmp_path):
+    """Closing the Terminal window sends SIGHUP: the launcher must stop its
+    children and Postgres, not die and leave them serving the old page."""
+    home = tmp_path / "home"
+    env = {
+        **os.environ,
+        "KA_FAKE_CHILDREN": "1",
+        "KNOWLEDGE_AGENT_HOME": str(home),
+        "FAKE_DIR": str(tmp_path),
+        "FAKE_MODE": "ok",
+        "PYTHONUNBUFFERED": "1",
+    }
+    proc = subprocess.Popen(
+        [sys.executable, str(DESKTOP_DIR / "launcher.py"), "--no-browser", "--port", "0"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env=env,
+    )
+    lines: list[str] = []
+    threading.Thread(target=lambda: lines.extend(iter(proc.stdout.readline, "")), daemon=True).start()
+    try:
+        assert _wait_for(lambda: any(line.startswith("Ready:") for line in lines), 20), "".join(lines)
+        pids = [int(m.group(1)) for line in lines for m in [PID_RE.search(line)] if m]
+        assert len(pids) == 2, "".join(lines)
+        proc.send_signal(launcher.signal.SIGHUP)
+        assert proc.wait(timeout=15) == 0, "".join(lines)
+        for pid in pids:
+            assert not _alive(pid), f"fake child {pid} still running"
+        assert not (home / "running.json").exists()
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+
+
+def _free_port() -> int:
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def test_orphaned_backend_is_cleared_on_start(tmp_path):
+    """running.json names a launcher that is gone, but its API still answers:
+    that's an orphan from a launcher that died. Clear it instead of reporting
+    'Already running' against a backend nothing supervises."""
+    port = _free_port()
+    orphan = subprocess.Popen([sys.executable, str(FAKE), "--port", str(port), "--mode", "ok"], stdout=subprocess.DEVNULL)
+    try:
+        url = f"http://127.0.0.1:{port}"
+        assert _wait_for(lambda: launcher._health_ok(url), 10)
+        dead = subprocess.Popen([sys.executable, "-c", "pass"])
+        dead.wait()
+        (tmp_path / "running.json").write_text(launcher.json.dumps({"url": url, "pid": dead.pid}))
+        assert launcher.running_instance(tmp_path) is None
+        assert orphan.wait(timeout=10) is not None
+        assert not (tmp_path / "running.json").exists()
+    finally:
+        if orphan.poll() is None:
+            orphan.kill()
+            orphan.wait()
+
+
+def test_running_instance_with_live_launcher(tmp_path):
+    port = _free_port()
+    server = subprocess.Popen([sys.executable, str(FAKE), "--port", str(port), "--mode", "ok"], stdout=subprocess.DEVNULL)
+    try:
+        url = f"http://127.0.0.1:{port}"
+        assert _wait_for(lambda: launcher._health_ok(url), 10)
+        (tmp_path / "running.json").write_text(launcher.json.dumps({"url": url, "pid": os.getpid()}))
+        assert launcher.running_instance(tmp_path) == url
+        assert server.poll() is None
+    finally:
+        server.kill()
+        server.wait()

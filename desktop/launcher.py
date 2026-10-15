@@ -173,12 +173,32 @@ def _space_free_socket_dirs() -> None:
     postgres_server.find_suitable_socket_dir = patched
 
 
+def _drop_dead_handles(pgdata: Path) -> None:
+    """pgserver stops Postgres only when the last process in its handle list
+    (pgdata/.handle_pids.json) lets go. A launcher that was killed never
+    removes itself, so its stale pid would keep Postgres running after every
+    later launcher exits. Only one launcher runs per data dir (see
+    running_instance), so entries for processes that no longer exist are
+    dropped before taking a handle."""
+    path = pgdata / ".handle_pids.json"
+    try:
+        pids = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return
+    if not isinstance(pids, list):
+        return
+    alive = [p for p in pids if isinstance(p, int) and _pid_alive(p)]
+    if alive != pids:
+        path.write_text(json.dumps(alive))
+
+
 def start_database(home: Path):
     import pgserver
 
     if os.name != "nt":
         _space_free_socket_dirs()
 
+    _drop_dead_handles(home / "pgdata")
     # cleanup_mode="stop": Postgres shuts down when this launcher exits, but
     # the data stays on disk for next time.
     server = pgserver.get_server(home / "pgdata", cleanup_mode="stop")
@@ -212,6 +232,8 @@ def child_env(base_url: str, db_uri: str, home: Path, paths: Paths) -> dict:
             "TOKEN_ENCRYPTION_KEY": keys["token_encryption_key"],
             "DESKTOP_DATA_DIR": str(home),
             "DESKTOP_STATIC_DIR": str(paths.ui_dir),
+            # Children exit if this process disappears without stopping them.
+            "KA_LAUNCHER_PID": str(os.getpid()),
             "PYTHONUNBUFFERED": "1",
         }
     )
@@ -243,18 +265,93 @@ def wait_healthy(url: str, proc: subprocess.Popen, timeout: float = 60) -> None:
     raise RuntimeError(f"the API didn't come up at {url}")
 
 
+def _health_ok(url: str) -> bool:
+    try:
+        with urllib.request.urlopen(f"{url}/api/health", timeout=2) as r:
+            return r.status == 200
+    except OSError:
+        return False
+
+
+def _pid_alive(pid: int) -> bool:
+    if os.name == "nt":
+        import ctypes
+
+        handle = ctypes.windll.kernel32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+        if not handle:
+            return False
+        try:
+            return ctypes.windll.kernel32.WaitForSingleObject(handle, 0) == 0x102  # WAIT_TIMEOUT
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _clear_orphans(url: str) -> None:
+    """Stop a backend whose launcher died without stopping it (a launcher
+    from before children watched for that, or a hard kill). POSIX only:
+    finds the API by the port it listens on, and the worker by this
+    checkout's exact worker command. Postgres is left alone; pgserver reuses
+    a running server for the same data dir and stops it with the new launcher."""
+    if os.name == "nt":
+        return
+    port = url.rsplit(":", 1)[-1]
+    pids: set[int] = set()
+    try:
+        out = subprocess.run(["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"], capture_output=True, text=True, timeout=5).stdout
+        pids |= {int(p) for p in out.split() if p.isdigit()}
+    except (OSError, subprocess.SubprocessError):
+        pass
+    worker_cmd = f"{sys.executable} -m app.main"
+    try:
+        out = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True, timeout=5).stdout
+        for line in out.splitlines():
+            pid, _, command = line.strip().partition(" ")
+            if command.strip() == worker_cmd and pid.isdigit():
+                pids.add(int(pid))
+    except (OSError, subprocess.SubprocessError):
+        pass
+    pids.discard(os.getpid())
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    deadline = time.time() + 5
+    while time.time() < deadline and _health_ok(url):
+        time.sleep(0.2)
+    for pid in pids:
+        if _pid_alive(pid):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+
+
 def running_instance(home: Path) -> str | None:
     """URL of an already-running launcher for this data dir, if any. Two
     launchers on one data dir would share a Postgres that the first one to
-    exit then stops underneath the other."""
+    exit then stops underneath the other. A backend still answering after
+    its launcher died is an orphan: it's stopped, and None is returned."""
     path = home / "running.json"
     try:
         info = json.loads(path.read_text())
-        with urllib.request.urlopen(f"{info['url']}/api/health", timeout=2) as r:
-            if r.status == 200:
-                return info["url"]
-    except (OSError, ValueError, KeyError):
-        pass
+        url, pid = info["url"], int(info["pid"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if not _health_ok(url):
+        return None
+    if _pid_alive(pid):
+        return url
+    print(f"Stopping a leftover backend at {url} (its launcher had exited)", flush=True)
+    _clear_orphans(url)
+    path.unlink(missing_ok=True)
     return None
 
 
@@ -325,7 +422,8 @@ class Supervisor:
             return
         self._handlers_installed = True
         if threading.current_thread() is threading.main_thread():
-            for sig in (signal.SIGINT, signal.SIGTERM):
+            # SIGHUP: the Terminal window running us was closed.
+            for sig in (signal.SIGINT, signal.SIGTERM, *([signal.SIGHUP] if hasattr(signal, "SIGHUP") else [])):
                 self._old_handlers[sig] = signal.signal(sig, lambda *_: self.request_stop())
         if lifeline:
             threading.Thread(target=self._watch_stdin, name="lifeline", daemon=True).start()
@@ -530,6 +628,8 @@ def main() -> int:
     # Until the supervisor installs its own handlers, SIGTERM unwinds like
     # Ctrl-C so the finally below still stops Postgres.
     signal.signal(signal.SIGTERM, _interrupt)
+    if hasattr(signal, "SIGHUP"):
+        signal.signal(signal.SIGHUP, _interrupt)
     running = home / "running.json"
     db = None
     sup = None

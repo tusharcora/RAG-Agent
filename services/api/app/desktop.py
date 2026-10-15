@@ -14,7 +14,10 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from app.core.launcher_watch import exit_when_launcher_exits
 from app.main import app as api_app
+
+exit_when_launcher_exits()  # never outlive the launcher that started us
 
 app = FastAPI(title="Knowledge Agent (desktop)", docs_url=None, redoc_url=None, openapi_url=None)
 app.mount("/api", api_app)
