@@ -12,7 +12,8 @@ never count against the budget. Items enqueued but not yet processed still look 
 next sync and are enqueued again (the worker's dedupe makes that cheap), so this converges.
 
 Nothing is deleted from a listing that didn't complete: repos only after every installation
-listed in full, files only from an untruncated tree, issues/PRs only after a full scan paged
+listed in full (an installation that can't be listed doesn't stop the others; the stored repos
+keep syncing), files only from an untruncated tree, issues/PRs only after a full scan paged
 through the whole history window.
 
 Token calls go through github_auth.github_access_token, which locks the connection row in
@@ -320,22 +321,32 @@ class _IssueStream:
             await self.pages.aclose()
 
 
-async def _list_repositories(client: GitHubClient) -> dict[int, tuple[int, dict]]:
-    """{repo_id: (installation_id, repo)} across every installation; raises unless all listings completed."""
+async def _list_repositories(client: GitHubClient, connection_id) -> tuple[dict[int, tuple[int, dict]], bool]:
+    """({repo_id: (installation_id, repo)} across every installation, complete). Raises if the
+    installations themselves can't be listed; an installation whose repositories can't be listed
+    (refused, rate limited, down) only makes the listing incomplete, so the others still sync."""
     installations: list[dict] = []
     async for page in client.pages("/user/installations", key="installations"):
         installations.extend(page)
     listed: dict[int, tuple[int, dict]] = {}
+    complete = True
     for installation in installations:
         installation_id = int(installation["id"])
-        async for page in client.pages(f"/user/installations/{installation_id}/repositories", key="repositories"):
-            for repo in page:
-                listed.setdefault(int(repo["id"]), (installation_id, repo))
-    return listed
+        try:
+            async for page in client.pages(f"/user/installations/{installation_id}/repositories", key="repositories"):
+                for repo in page:
+                    listed.setdefault(int(repo["id"]), (installation_id, repo))
+        except GitHubError as exc:
+            logger.warning(
+                "GitHub sync: installation %s couldn't be listed for connection=%s: %s", installation_id, connection_id, exc
+            )
+            complete = False
+    return listed, complete
 
 
-async def _save_repositories(ctx: _Sync, listed: dict[int, tuple[int, dict]]) -> None:
-    """Upserts the listed repos (keeping their cursors) and removes the rest with their documents."""
+async def _save_repositories(ctx: _Sync, listed: dict[int, tuple[int, dict]], complete: bool) -> None:
+    """Upserts the listed repos (keeping their cursors) and, only when every installation listed in
+    full, removes the rest with their documents."""
     session = ctx.session
     for repo_id, (installation_id, repo) in listed.items():
         values = {
@@ -350,6 +361,8 @@ async def _save_repositories(ctx: _Sync, listed: dict[int, tuple[int, dict]]) ->
             .values(connection_id=ctx.connection_id, repo_id=repo_id, **values)
             .on_conflict_do_update(index_elements=["connection_id", "repo_id"], set_=values)
         )
+    if not complete:
+        return
     stale = (
         await session.execute(
             select(GithubRepo.repo_id).where(
@@ -369,7 +382,7 @@ async def _save_repositories(ctx: _Sync, listed: dict[int, tuple[int, dict]]) ->
 async def sync_github_connection(session: AsyncSession, connection: OAuthConnection) -> dict:
     """Lists repositories and enqueues changed files, issues and PRs (see the module docstring).
     Shared by POST /sync/github and auto_sync. Raises HTTPException 409 (disconnected / needs
-    reconnecting) or 502 (GitHub unreachable while listing repositories); once items are being
+    reconnecting) or 502 (GitHub unreachable while listing installations); once items are being
     enqueued, a rate limit or outage just stops the sync early (truncated) to resume next run."""
     require_connected(connection, "github")
     connection_id = connection.id
@@ -408,11 +421,11 @@ async def _enumerate(session: AsyncSession, connection: OAuthConnection, token: 
     async with GitHubClient(token, refresh) as client:
         ctx = _Sync(session, connection, client)
         try:
-            listed = await _list_repositories(client)
+            listed, complete = await _list_repositories(client, connection_id)
         except GitHubError as exc:
-            logger.warning("GitHub sync: repository listing failed for connection=%s: %s", connection_id, exc)
+            logger.warning("GitHub sync: installation listing failed for connection=%s: %s", connection_id, exc)
             raise HTTPException(status_code=502, detail=UNAVAILABLE) from exc
-        await _save_repositories(ctx, listed)
+        await _save_repositories(ctx, listed, complete)
         await session.commit()
 
         repos = (
@@ -420,7 +433,8 @@ async def _enumerate(session: AsyncSession, connection: OAuthConnection, token: 
                 select(GithubRepo).where(GithubRepo.connection_id == connection_id).order_by(GithubRepo.repo_id)
             )
         ).scalars().all()
-        published, incomplete = 0, False
+        # An installation that couldn't be listed: its known repos still sync, nothing was removed.
+        published, incomplete = 0, not complete
         active: list[_FileStream | _IssueStream] = []
         if repos:
             start = (connection.github_rr_offset or 0) % len(repos)

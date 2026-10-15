@@ -295,14 +295,40 @@ def test_partial_repo_listing_deletes_nothing(gh, published, factory, pg_dsn):
     _, conn_id = seed_conn(pg_dsn)
     seed_repo(pg_dsn, conn_id, repo(99, "x"))
     seed_doc(pg_dsn, conn_id, "file:99:README.md", "s1")
+    gh.trees["octo/x"] = 404  # this sync can't reach it either; its rows and documents stay
     gh.installations = {1: [repo(11, "a"), repo(12, "b"), repo(13, "c")]}
     gh.fail[("/user/installations/1/repositories", 2)] = 500
+    result = sync(factory, conn_id)
+    assert result["truncated"] is True and result["removed"] == 0
+    assert set(repos(pg_dsn, conn_id)) == {11, 12, 99}  # page 1 upserted, nothing removed
+    assert docs(pg_dsn, conn_id) == {"file:99:README.md": "s1"}
+    assert len(gh.calls("/user/installations/1/repositories")) > 2  # page 2 was retried
+
+
+def test_one_refusing_installation_doesnt_stop_the_others(gh, published, factory, pg_dsn):
+    _, conn_id = seed_conn(pg_dsn)
+    seed_repo(pg_dsn, conn_id, repo(99, "x"), installation=1)
+    seed_doc(pg_dsn, conn_id, "file:99:README.md", "s1")
+    gh.trees["octo/x"] = 404
+    gh.installations = {1: [repo(99, "x")], 2: [repo(21, "d")]}
+    gh.fail[("/user/installations/1/repositories", 1)] = 403
+    gh.trees["octo/d"] = {"sha": "T1", "truncated": False, "tree": [blob("a.md", "s1")]}
+    result = sync(factory, conn_id)
+    assert result == {"published": 1, "truncated": True, "removed": 0}
+    assert paths(published) == ["a.md"] and published[0]["payload"]["full_name"] == "octo/d"
+    assert set(repos(pg_dsn, conn_id)) == {21, 99}
+    assert docs(pg_dsn, conn_id) == {"file:99:README.md": "s1"}
+
+
+def test_installations_listing_failure_is_502(gh, published, factory, pg_dsn):
+    _, conn_id = seed_conn(pg_dsn)
+    seed_repo(pg_dsn, conn_id, repo(99, "x"))
+    gh.installations = {1: [repo(11, "a")]}
+    gh.fail[("/user/installations", 1)] = 500
     with pytest.raises(HTTPException) as err:
         sync(factory, conn_id)
     assert err.value.status_code == 502
     assert set(repos(pg_dsn, conn_id)) == {99}
-    assert docs(pg_dsn, conn_id) == {"file:99:README.md": "s1"}
-    assert len(gh.calls("/user/installations/1/repositories")) > 2  # page 2 was retried
 
 
 def test_removed_repo_deletes_its_documents(gh, published, factory, pg_dsn):
