@@ -22,7 +22,6 @@ import argparse
 import asyncio
 import json
 import os
-import secrets
 import signal
 import socket
 import subprocess
@@ -30,13 +29,14 @@ import sys
 import time
 import urllib.request
 import webbrowser
+from dataclasses import dataclass
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import desktop_config  # noqa: E402
+
 REPO = Path(__file__).resolve().parent.parent
-API_DIR = REPO / "services" / "api"
-WORKER_DIR = REPO / "services" / "worker"
-SQL_DIR = REPO / "infra" / "postgres"
-STATIC_DIR = REPO / "services" / "frontend" / "out"
 
 APP_NAME = "Knowledge Agent"
 DEFAULT_PORT = 47821
@@ -54,24 +54,25 @@ def data_dir() -> Path:
     return path
 
 
-def load_secrets(home: Path) -> dict:
-    """Per-install keys, generated once. Losing this file logs everyone out and
-    makes stored integration tokens unreadable (they'd need reconnecting)."""
-    path = home / "secrets.json"
-    if path.exists():
-        return json.loads(path.read_text())
-    from cryptography.fernet import Fernet
+@dataclass(frozen=True)
+class Paths:
+    api_dir: Path
+    worker_dir: Path
+    sql_dir: Path
+    ui_dir: Path
 
-    values = {
-        "jwt_secret": secrets.token_urlsafe(48),
-        "token_encryption_key": Fernet.generate_key().decode(),
-    }
-    path.write_text(json.dumps(values, indent=2))
-    try:
-        path.chmod(0o600)
-    except OSError:
-        pass  # Windows: ACLs, not mode bits
-    return values
+
+def resolve_paths(resources: Path | None) -> Paths:
+    """Where the api, worker, schema and built UI live: inside an app bundle's
+    resources folder when given one, else this repo's layout."""
+    if resources is not None:
+        return Paths(resources / "api", resources / "worker", resources / "sql", resources / "ui")
+    return Paths(
+        REPO / "services" / "api",
+        REPO / "services" / "worker",
+        REPO / "infra" / "postgres",
+        REPO / "services" / "frontend" / "out",
+    )
 
 
 def free_port(preferred: int) -> int:
@@ -102,7 +103,7 @@ def _desktop_sql(text: str) -> str:
     )
 
 
-async def migrate(dsn: str) -> None:
+async def migrate(dsn: str, sql_dir: Path) -> None:
     """Apply infra/postgres/*.sql in filename order, each exactly once —
     the same files Docker's initdb runs for the server version."""
     import asyncpg
@@ -115,7 +116,7 @@ async def migrate(dsn: str) -> None:
             " filename TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())"
         )
         done = {r["filename"] for r in await conn.fetch("SELECT filename FROM schema_migrations")}
-        for path in sorted(SQL_DIR.glob("*.sql")):
+        for path in sorted(sql_dir.glob("*.sql")):
             if path.name in done:
                 continue
             print(f"  applying {path.name}")
@@ -168,7 +169,9 @@ def start_database(home: Path):
 # --- Processes ------------------------------------------------------------
 
 
-def child_env(base_url: str, db_uri: str, keys: dict) -> dict:
+def child_env(base_url: str, db_uri: str, home: Path, paths: Paths) -> dict:
+    keys = desktop_config.load_secrets(home)
+    config = desktop_config.load(home)
     env = dict(os.environ)
     env.update(
         {
@@ -178,7 +181,7 @@ def child_env(base_url: str, db_uri: str, keys: dict) -> dict:
             "QUEUE_BACKEND": "postgres",
             "REDIS_URL": "memory://",
             "RABBITMQ_URL": "amqp://unused/",
-            "EMBEDDING_PROVIDER": env.get("EMBEDDING_PROVIDER", "ollama"),
+            "EMBEDDING_PROVIDER": config["embedding_provider"],
             "OTEL_ENABLED": "false",
             # UI and API share one plain-http 127.0.0.1 origin.
             "COOKIE_SECURE": "false",
@@ -187,10 +190,14 @@ def child_env(base_url: str, db_uri: str, keys: dict) -> dict:
             "CORS_ORIGINS": json.dumps([base_url]),
             "JWT_SECRET": keys["jwt_secret"],
             "TOKEN_ENCRYPTION_KEY": keys["token_encryption_key"],
-            "DESKTOP_STATIC_DIR": str(STATIC_DIR),
+            "DESKTOP_DATA_DIR": str(home),
+            "DESKTOP_STATIC_DIR": str(paths.ui_dir),
             "PYTHONUNBUFFERED": "1",
         }
     )
+    for secret_key, env_key in (("voyage_api_key", "VOYAGE_API_KEY"), ("google_api_key", "GOOGLE_API_KEY")):
+        if keys.get(secret_key):
+            env[env_key] = keys[secret_key]
     return env
 
 
@@ -228,7 +235,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", DEFAULT_PORT)))
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--resources", type=Path, help="app bundle resources dir (api/, worker/, sql/, ui/); default: this repo")
     args = parser.parse_args()
+    paths = resolve_paths(args.resources)
 
     home = data_dir()
     print(f"{APP_NAME}: data in {home}")
@@ -238,16 +247,16 @@ def main() -> int:
         if not args.no_browser:
             webbrowser.open(existing)
         return 0
-    keys = load_secrets(home)
+    desktop_config.load_secrets(home)  # generate keys on first run
 
     print("Starting database…")
     db, db_uri = start_database(home)
-    asyncio.run(migrate(db_uri))
+    asyncio.run(migrate(db_uri, paths.sql_dir))
 
     port = free_port(args.port)
     base_url = f"http://127.0.0.1:{port}"
-    env = child_env(base_url, db_uri, keys)
-    if not STATIC_DIR.is_dir():
+    env = child_env(base_url, db_uri, home, paths)
+    if not paths.ui_dir.is_dir():
         print(
             "  note: no built UI found — run `DESKTOP_BUILD=1 npm run build` in services/frontend.\n"
             "  The API still runs; the UI won't be served until then."
@@ -256,10 +265,10 @@ def main() -> int:
     py = sys.executable
     api = subprocess.Popen(
         [py, "-m", "uvicorn", "app.desktop:app", "--host", "127.0.0.1", "--port", str(port), "--log-level", "warning"],
-        cwd=API_DIR,
+        cwd=paths.api_dir,
         env=env,
     )
-    worker = subprocess.Popen([py, "-m", "app.main"], cwd=WORKER_DIR, env=env)
+    worker = subprocess.Popen([py, "-m", "app.main"], cwd=paths.worker_dir, env=env)
     children = [api, worker]
 
     def shutdown(*_):
