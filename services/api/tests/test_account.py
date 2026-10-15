@@ -13,7 +13,7 @@ from app.core.auth import AuthContext, require_auth
 from app.core.config import settings
 
 from .conftest import db_run
-from .test_connect import BROKER, PORT, _start, fake_broker  # noqa: F401 - fixture
+from .test_connect import BROKER, PORT, _start, fake_broker, fin  # noqa: F401 - fixture
 
 LOCAL_EMAIL = "you@this-computer.local"
 COLLISION = "That account is already linked to another profile on this computer."
@@ -56,7 +56,7 @@ def client(make_client, fake_broker, monkeypatch):  # noqa: F811
 
 def _sign_in(client, fb, result) -> str:
     state = _start(client, fb, result["provider"], result)
-    return client.get("/connect/finish", params={"state": state}).text
+    return client.get("/connect/finish", params=fin(state)).text
 
 
 def _user(dsn, user_id):
@@ -142,7 +142,7 @@ def test_email_collision_is_refused(client, fake_broker, pg_dsn):  # noqa: F811
     db_run(pg_dsn, "INSERT INTO users (id, email) VALUES ($1, $2)", uuid.uuid4(), other_email)
     before = _user(pg_dsn, c.user_id)
     state = _start(c, fake_broker, "google", _identity("google", email=other_email.upper()))
-    page = c.get("/connect/finish", params={"state": state}).text
+    page = c.get("/connect/finish", params=fin(state)).text
     assert "already linked to another profile on this computer" in page
     assert c.get(f"/connect/status/{state}").json() == {"status": "error", "message": COLLISION}
     assert _user(pg_dsn, c.user_id) == before

@@ -1,8 +1,9 @@
 """Client for the sign-in Worker (desktop/broker) the desktop app uses for OAuth.
 
 The Worker holds the provider client secrets; the app only ever sends it a
-state id, a challenge, its loopback port, and later the verifier. Never log
-verifiers, tokens or results from this module.
+state id, a challenge, its loopback port, and later the verifier plus the
+one-time pickup from the loopback redirect. Never log verifiers, pickups,
+tokens or results from this module.
 """
 
 from urllib.parse import quote, urlencode
@@ -69,18 +70,24 @@ def _json(resp: httpx.Response) -> dict:
     return data
 
 
-async def redeem(state: str, verifier: str) -> dict:
-    """The sign-in result for `state`, released once by the Worker."""
+async def redeem(state: str, verifier: str, pickup: str) -> dict:
+    """The sign-in result for `state`, released once by the Worker.
+
+    `pickup` is the one-time value the Worker put in the loopback finish URL;
+    it binds redemption to whoever received that redirect.
+    """
     try:
         async with _client(15.0) as client:
-            resp = await client.post(f"{_base()}/redeem", json={"state": state, "verifier": verifier})
+            resp = await client.post(
+                f"{_base()}/redeem", json={"state": state, "verifier": verifier, "pickup": pickup}
+            )
     except httpx.HTTPError as exc:
         raise BrokerUnavailable() from exc
     if resp.status_code == 200:
         return _json(resp)
     if resp.status_code >= 500:
         raise BrokerUnavailable()
-    # 403 (wrong verifier, entry burnt), 404 (unknown/expired), 400 (malformed).
+    # 403 (wrong verifier/pickup, entry burnt), 404 (unknown/expired), 400 (malformed).
     raise BrokerExpired()
 
 

@@ -10,8 +10,8 @@ logs no codes, tokens, verifiers or identities.
 | Route | Purpose |
 | --- | --- |
 | `GET /start/{provider}?state&challenge&port` | Saves the pending sign-in and redirects to the provider (`notion`, `jira`, `google`, `github`). |
-| `GET /callback/{provider}` | Provider redirect target. Exchanges the code, stores the encrypted result, sends the browser to `http://127.0.0.1:{port}/api/connect/finish?state=…`. |
-| `POST /redeem` `{state, verifier}` | Returns the result once if `base64url(sha256(verifier))` matches the challenge. 403 wrong verifier (entry deleted), 404 unknown/expired/used. |
+| `GET /callback/{provider}` | Provider redirect target. Exchanges the code, stores the encrypted result, sends the browser to `http://127.0.0.1:{port}/api/connect/finish?state=…&pickup=…` (`pickup` is a fresh random value; only its SHA-256 is stored). |
+| `POST /redeem` `{state, verifier, pickup}` | Returns the result once if `base64url(sha256(verifier))` matches the challenge and `pickup` is the one from the loopback redirect, so only the app that received that redirect can redeem. 403 wrong verifier or wrong/missing pickup (entry deleted), 404 unknown/expired/used. |
 | `POST /refresh/jira` `{refresh_token}` | Refreshes a Jira token with the client secret. |
 | `GET /health` | `ok` |
 

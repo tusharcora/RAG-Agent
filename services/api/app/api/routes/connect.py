@@ -2,10 +2,11 @@
 
 start  -> the app keeps {purpose, verifier, user, org} in memory and hands the
           browser the Worker's /start URL with challenge = sha256(verifier).
-finish -> the browser comes back here with only `state`; we redeem the result
-          from the Worker with the verifier (which never left this process)
-          and save the connection (notion/jira) or link the identity
-          (google/github, via IDENTITY_HANDLER).
+finish -> the browser comes back here with `state` and the Worker's one-time
+          `pickup`; we redeem the result from the Worker with the verifier
+          (which never left this process) plus that pickup (which only this
+          loopback redirect ever saw), and save the connection (notion/jira)
+          or link the identity (google/github, via IDENTITY_HANDLER).
 
 Desktop mode only (404 otherwise). Flows live in process memory, never on
 disk, and are dropped lazily after FLOW_TTL seconds. Never log verifiers,
@@ -161,16 +162,17 @@ def _fail(flow: Flow, message: str) -> HTMLResponse:
 
 
 @router.get("/finish")
-async def finish(state: str = "", session: AsyncSession = Depends(get_session)) -> HTMLResponse:
+async def finish(state: str = "", pickup: str = "", session: AsyncSession = Depends(get_session)) -> HTMLResponse:
     _prune()
     flow = _FLOWS.get(state)
-    if flow is None or flow.status != "pending" or flow.redeeming:
+    # No pickup: not a redirect from the Worker's callback. Leave the flow alone (don't burn it) and say expired.
+    if flow is None or flow.status != "pending" or flow.redeeming or not pickup:
         return _page(broker.EXPIRED)
 
     flow.redeeming = True
     try:
         try:
-            result = await broker.redeem(state, flow.verifier)
+            result = await broker.redeem(state, flow.verifier, pickup)
         except broker.BrokerError as exc:
             return _fail(flow, str(exc))
 

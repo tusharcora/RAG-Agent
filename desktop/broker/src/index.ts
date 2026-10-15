@@ -3,12 +3,15 @@
 // Flow: the app calls GET /start/{provider} (via the user's browser) with a random `state`, a PKCE-style
 // `challenge` and its loopback `port`. The provider redirects back to /callback/{provider}; we exchange the code
 // with the client secret, store the result encrypted under `state` for 120 s, and send the browser to
-// http://127.0.0.1:{port}/api/connect/finish?state=... — carrying only the state id. The app then POSTs
-// /redeem {state, verifier}; the result is released once, only if sha256(verifier) matches the challenge.
+// http://127.0.0.1:{port}/api/connect/finish?state=...&pickup=... — carrying the state id and a one-time random
+// `pickup` that only that loopback redirect ever sees. The app then POSTs /redeem {state, verifier, pickup}; the
+// result is released once, only if sha256(verifier) matches the challenge AND sha256(pickup) matches the stored
+// hash. The pickup binds redemption to the loopback redirect: whoever started the sign-in (and so holds the
+// verifier) can't redeem a result that a provider callback delivered to somebody else's browser.
 //
 // Never log codes, tokens, verifiers or identities from this file.
 
-import { challengeOf, constantTimeEqual, open, seal } from "./crypto";
+import { b64urlEncode, challengeOf, constantTimeEqual, open, seal } from "./crypto";
 import {
   DISPLAY_NAME,
   type Env,
@@ -32,6 +35,7 @@ const STATE_RE = /^[A-Za-z0-9_-]{32,128}$/;
 const CHALLENGE_RE = /^[A-Za-z0-9_-]{43}$/;
 const VERIFIER_RE = /^[A-Za-z0-9_-]{43,128}$/;
 const PORT_RE = /^[0-9]{4,5}$/;
+const PICKUP_RE = /^[A-Za-z0-9_-]{43}$/;
 
 const EXPIRED = "This sign-in link has expired. Start again from the app.";
 const INVALID = "This sign-in link isn't valid. Start again from the app.";
@@ -44,6 +48,8 @@ interface Pending {
 
 interface StoredResult {
   challenge: string;
+  /** base64url(sha256(pickup)) — the pickup itself only travels in the loopback redirect. */
+  pickup_hash: string;
   sealed: string;
 }
 
@@ -159,21 +165,29 @@ async function handleCallback(provider: string, url: URL, env: Env): Promise<Res
     }
   }
 
-  const stored: StoredResult = { challenge: pending.challenge, sealed: await seal(result, env.RESULT_KEY, state) };
+  const pickup = b64urlEncode(crypto.getRandomValues(new Uint8Array(32)));
+  const stored: StoredResult = {
+    challenge: pending.challenge,
+    pickup_hash: await challengeOf(pickup),
+    sealed: await seal(result, env.RESULT_KEY, state),
+  };
   await env.PENDING.put(kResult(state), JSON.stringify(stored), { expirationTtl: RESULT_TTL });
-  return redirect(`http://127.0.0.1:${port}/api/connect/finish?state=${encodeURIComponent(state)}`);
+  return redirect(
+    `http://127.0.0.1:${port}/api/connect/finish?state=${encodeURIComponent(state)}&pickup=${encodeURIComponent(pickup)}`,
+  );
 }
 
 async function handleRedeem(request: Request, env: Env): Promise<Response> {
   const body = await readJson(request);
   const state = body?.state;
   const verifier = body?.verifier;
+  const pickup = typeof body?.pickup === "string" ? body.pickup : "";
   if (typeof state !== "string" || typeof verifier !== "string" || !STATE_RE.test(state) || !VERIFIER_RE.test(verifier)) {
-    return json({ error: "Expected JSON {state, verifier}." }, 400);
+    return json({ error: "Expected JSON {state, verifier, pickup}." }, 400);
   }
   const raw = await env.PENDING.get(kResult(state));
   if (raw === null) return json({ error: EXPIRED }, 404);
-  // Single use either way: a wrong verifier burns the entry too.
+  // Single use either way: a wrong verifier or a wrong/missing pickup burns the entry too.
   await env.PENDING.delete(kResult(state));
 
   let stored: StoredResult;
@@ -182,8 +196,14 @@ async function handleRedeem(request: Request, env: Env): Promise<Response> {
   } catch {
     return json({ error: EXPIRED }, 404);
   }
-  if (!constantTimeEqual(await challengeOf(verifier), stored.challenge)) {
-    return json({ error: "Verifier doesn't match." }, 403);
+  // Evaluate both checks before branching so timing doesn't reveal which one failed.
+  const verifierOk = constantTimeEqual(await challengeOf(verifier), stored.challenge ?? "");
+  const pickupOk =
+    PICKUP_RE.test(pickup) &&
+    typeof stored.pickup_hash === "string" &&
+    constantTimeEqual(await challengeOf(pickup), stored.pickup_hash);
+  if (!verifierOk || !pickupOk) {
+    return json({ error: "This sign-in couldn't be confirmed." }, 403);
   }
   let result: unknown;
   try {

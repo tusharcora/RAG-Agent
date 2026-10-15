@@ -63,14 +63,24 @@ class FakeBroker:
             entry = self.results.pop(body["state"], None)
             if entry is None:
                 return httpx.Response(404, json={"error": EXPIRED})
-            if _challenge(body["verifier"]) != entry["challenge"]:
-                return httpx.Response(403, json={"error": "Verifier doesn't match."})
+            if _challenge(body["verifier"]) != entry["challenge"] or body.get("pickup") != pickup_for(body["state"]):
+                return httpx.Response(403, json={"error": "This sign-in couldn't be confirmed."})
             return httpx.Response(200, json=entry["result"])
         return httpx.Response(404, text="not found")
 
 
 def _challenge(verifier: str) -> str:
     return base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+
+
+def pickup_for(state: str) -> str:
+    """The one-time pickup the fake Worker put in the loopback redirect for `state`."""
+    return _challenge("pickup:" + state)
+
+
+def fin(state: str) -> dict:
+    """Query params of the Worker's loopback redirect for `state`."""
+    return {"state": state, "pickup": pickup_for(state)}
 
 
 @pytest.fixture
@@ -172,7 +182,7 @@ def test_start_returns_url_with_challenge(client_for, fake_broker):
 def test_finish_notion_saves_connection(client_for, fake_broker, pg_dsn):
     client = client_for(db=True)
     state = _start(client, fake_broker, "notion", NOTION_RESULT)
-    r = client.get("/connect/finish", params={"state": state})
+    r = client.get("/connect/finish", params=fin(state))
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("text/html")
     assert r.headers["cache-control"] == "no-store"
@@ -192,7 +202,7 @@ def test_finish_notion_saves_connection(client_for, fake_broker, pg_dsn):
 def test_finish_jira_saves_site(client_for, fake_broker, pg_dsn):
     client = client_for(db=True)
     state = _start(client, fake_broker, "jira", JIRA_RESULT)
-    r = client.get("/connect/finish", params={"state": state})
+    r = client.get("/connect/finish", params=fin(state))
     assert r.status_code == 200 and "Connected to Jira" in r.text
     assert "secret-jira" not in r.text
     (row,) = _rows(pg_dsn, client.org_id, "jira")
@@ -210,7 +220,7 @@ def test_finish_jira_saves_site(client_for, fake_broker, pg_dsn):
 def test_finish_denied(client_for, fake_broker, pg_dsn):
     client = client_for(db=True)
     state = _start(client, fake_broker, "notion", {"provider": "notion", "error": "Notion access wasn't granted."})
-    r = client.get("/connect/finish", params={"state": state})
+    r = client.get("/connect/finish", params=fin(state))
     assert r.status_code == 200
     assert "Notion access wasn&#x27;t granted." in r.text or "Notion access wasn&#39;t granted." in r.text
     assert client.get(f"/connect/status/{state}").json() == {
@@ -223,7 +233,7 @@ def test_finish_denied(client_for, fake_broker, pg_dsn):
 def test_finish_escapes_error_text(client_for, fake_broker, pg_dsn):
     client = client_for(db=True)
     state = _start(client, fake_broker, "notion", {"provider": "notion", "error": "<b>nope</b>"})
-    r = client.get("/connect/finish", params={"state": state})
+    r = client.get("/connect/finish", params=fin(state))
     assert "<b>nope</b>" not in r.text and "&lt;b&gt;nope&lt;/b&gt;" in r.text
 
 
@@ -240,11 +250,41 @@ def test_finish_missing_state_page(client_for, fake_broker, pg_dsn):
     assert r.status_code == 200 and "has expired" in r.text
 
 
+def test_finish_without_pickup_is_expired_and_keeps_flow(client_for, fake_broker, pg_dsn):
+    client = client_for(db=True)
+    state = _start(client, fake_broker, "notion", NOTION_RESULT)
+    for params in ({"state": state}, {"state": state, "pickup": ""}):
+        r = client.get("/connect/finish", params=params)
+        assert r.status_code == 200 and "has expired" in r.text
+    # Nothing was sent to the Worker and the real redirect still completes the sign-in.
+    assert fake_broker.redeemed == []
+    assert client.get(f"/connect/status/{state}").json()["status"] == "pending"
+    assert "Connected to Notion" in client.get("/connect/finish", params=fin(state)).text
+
+
+def test_finish_passes_pickup_to_redeem(client_for, fake_broker, pg_dsn):
+    client = client_for(db=True)
+    state = _start(client, fake_broker, "notion", NOTION_RESULT)
+    client.get("/connect/finish", params=fin(state))
+    (body,) = fake_broker.redeemed
+    assert body["state"] == state and body["pickup"] == pickup_for(state)
+    assert body["verifier"] == connect_routes._FLOWS[state].verifier
+
+
+def test_finish_wrong_pickup_refused(client_for, fake_broker, pg_dsn):
+    client = client_for(db=True)
+    state = _start(client, fake_broker, "notion", NOTION_RESULT)
+    r = client.get("/connect/finish", params={"state": state, "pickup": "not-the-pickup"})
+    assert "has expired" in r.text
+    assert client.get(f"/connect/status/{state}").json() == {"status": "error", "message": EXPIRED}
+    assert _rows(pg_dsn, client.org_id, "notion") == []
+
+
 def test_finish_twice(client_for, fake_broker, pg_dsn):
     client = client_for(db=True)
     state = _start(client, fake_broker, "notion", NOTION_RESULT)
-    assert "Connected to Notion" in client.get("/connect/finish", params={"state": state}).text
-    second = client.get("/connect/finish", params={"state": state})
+    assert "Connected to Notion" in client.get("/connect/finish", params=fin(state)).text
+    second = client.get("/connect/finish", params=fin(state))
     assert second.status_code == 200 and "has expired" in second.text
     assert len(_rows(pg_dsn, client.org_id, "notion")) == 1
     # The first, successful outcome is what /status keeps reporting.
@@ -255,7 +295,7 @@ def test_finish_broker_unreachable(client_for, fake_broker, pg_dsn):
     client = client_for(db=True)
     state = _start(client, fake_broker, "notion", NOTION_RESULT)
     fake_broker.unreachable = True
-    r = client.get("/connect/finish", params={"state": state})
+    r = client.get("/connect/finish", params=fin(state))
     assert r.status_code == 200
     assert "Couldn&#x27;t reach the sign-in service" in r.text or "Couldn&#39;t reach the sign-in service" in r.text
     assert client.get(f"/connect/status/{state}").json() == {"status": "error", "message": UNREACHABLE}
@@ -266,7 +306,7 @@ def test_finish_redeem_expired_at_broker(client_for, fake_broker, pg_dsn):
     client = client_for(db=True)
     state = _start(client, fake_broker, "notion", NOTION_RESULT)
     fake_broker.results.clear()  # the Worker's 120 s result TTL ran out
-    r = client.get("/connect/finish", params={"state": state})
+    r = client.get("/connect/finish", params=fin(state))
     assert "has expired" in r.text
     assert client.get(f"/connect/status/{state}").json() == {"status": "error", "message": EXPIRED}
 
@@ -274,7 +314,7 @@ def test_finish_redeem_expired_at_broker(client_for, fake_broker, pg_dsn):
 def test_finish_provider_mismatch_is_refused(client_for, fake_broker, pg_dsn):
     client = client_for(db=True)
     state = _start(client, fake_broker, "notion", JIRA_RESULT)
-    client.get("/connect/finish", params={"state": state})
+    client.get("/connect/finish", params=fin(state))
     assert client.get(f"/connect/status/{state}").json()["status"] == "error"
     assert _rows(pg_dsn, client.org_id, "jira") == [] and _rows(pg_dsn, client.org_id, "notion") == []
 
@@ -284,7 +324,7 @@ def test_two_flows_same_provider(client_for, fake_broker, pg_dsn):
     first = _start(client, fake_broker, "notion", {**NOTION_RESULT, "workspace_name": "First"})
     second = _start(client, fake_broker, "notion", {**NOTION_RESULT, "workspace_name": "Second"})
     assert first != second
-    assert "Connected to Notion" in client.get("/connect/finish", params={"state": second}).text
+    assert "Connected to Notion" in client.get("/connect/finish", params=fin(second)).text
     rows = _rows(pg_dsn, client.org_id, "notion")
     assert [r["workspace_name"] for r in rows] == ["Second"]
     assert client.get(f"/connect/status/{first}").json()["status"] == "pending"
@@ -303,7 +343,7 @@ def test_cancel_forgets_flow(client_for, fake_broker, pg_dsn):
     r = client.post(f"/connect/{state}/cancel")
     assert r.status_code == 200 and r.json() == {}
     assert client.get(f"/connect/status/{state}").status_code == 404
-    assert "has expired" in client.get("/connect/finish", params={"state": state}).text
+    assert "has expired" in client.get("/connect/finish", params=fin(state)).text
     assert fake_broker.redeemed == []
 
 
@@ -326,7 +366,7 @@ def test_identity_handler_called_for_google(client_for, fake_broker, pg_dsn, mon
     client = client_for(db=True)
     result = {"provider": "google", "provider_user_id": "g-1", "email": "ada@example.com", "name": "Ada"}
     state = _start(client, fake_broker, "google", result)
-    r = client.get("/connect/finish", params={"state": state})
+    r = client.get("/connect/finish", params=fin(state))
     assert "Signed in as Ada &lt;Lovelace&gt;" in r.text
     assert calls == [(client.user_id, result)]
     assert client.get(f"/connect/status/{state}").json()["status"] == "done"
@@ -339,7 +379,7 @@ def test_identity_handler_refusal(client_for, fake_broker, pg_dsn, monkeypatch):
     monkeypatch.setattr(connect_routes, "IDENTITY_HANDLER", handler)
     client = client_for(db=True)
     state = _start(client, fake_broker, "github", {"provider": "github", "provider_user_id": "1", "email": None, "name": "x"})
-    r = client.get("/connect/finish", params={"state": state})
+    r = client.get("/connect/finish", params=fin(state))
     assert "linked to someone else" in r.text
     assert client.get(f"/connect/status/{state}").json() == {
         "status": "error",

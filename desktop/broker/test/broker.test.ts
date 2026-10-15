@@ -16,6 +16,11 @@ function randomId(n = 32): string {
   return b64url(crypto.getRandomValues(new Uint8Array(n)));
 }
 
+/** Right shape for a pickup but with a character the format forbids. */
+function pickupLike(): string {
+  return randomId(32).slice(0, 42) + "*";
+}
+
 async function pkce(): Promise<{ verifier: string; challenge: string }> {
   const verifier = randomId(32);
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
@@ -32,22 +37,35 @@ function callback(provider: string, params: Record<string, string>): Promise<Res
   return SELF.fetch(`${BROKER}/callback/${provider}?${qs}`, { redirect: "manual" });
 }
 
-function redeem(state: string, verifier: string): Promise<Response> {
+function redeem(state: string, verifier: string, pickup?: string): Promise<Response> {
+  const body: Record<string, string> = { state, verifier };
+  if (pickup !== undefined) body.pickup = pickup;
   return SELF.fetch(`${BROKER}/redeem`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ state, verifier }),
+    body: JSON.stringify(body),
   });
 }
 
-/** start → (provider approves) → callback; returns the state/verifier to redeem with. */
+/** The loopback finish URL a callback redirected to, split into its parts. */
+function finishOf(res: Response): { origin: string; path: string; state: string | null; pickup: string } {
+  const loc = new URL(res.headers.get("location")!);
+  const keys = [...loc.searchParams.keys()].sort();
+  expect(keys).toEqual(["pickup", "state"]);
+  const pickup = loc.searchParams.get("pickup")!;
+  expect(pickup).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  return { origin: loc.origin, path: loc.pathname, state: loc.searchParams.get("state"), pickup };
+}
+
+/** start → (provider approves) → callback; returns the state/verifier/pickup to redeem with. */
 async function signIn(provider: string, cb: Record<string, string> = { code: "the-code" }) {
   const { verifier, challenge } = await pkce();
   const state = randomId(32);
   const s = await start(provider, { state, challenge, port: PORT });
   expect(s.status).toBe(302);
   const c = await callback(provider, { ...cb, state });
-  return { state, verifier, callbackResponse: c };
+  const pickup = c.status === 302 ? finishOf(c).pickup : "";
+  return { state, verifier, pickup, callbackResponse: c };
 }
 
 function mockNotionToken() {
@@ -221,12 +239,15 @@ describe("start", () => {
 describe("flows", () => {
   it("notion_flow_round_trip", async () => {
     mockNotionToken();
-    const { state, verifier, callbackResponse } = await signIn("notion");
+    const { state, verifier, pickup, callbackResponse } = await signIn("notion");
     expect(callbackResponse.status).toBe(302);
-    expect(callbackResponse.headers.get("location")).toBe(
-      `http://127.0.0.1:${PORT}/api/connect/finish?state=${state}`,
-    );
-    const res = await redeem(state, verifier);
+    expect(finishOf(callbackResponse)).toEqual({
+      origin: `http://127.0.0.1:${PORT}`,
+      path: "/api/connect/finish",
+      state,
+      pickup,
+    });
+    const res = await redeem(state, verifier, pickup);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       provider: "notion",
@@ -262,8 +283,8 @@ describe("flows", () => {
         { id: "cloud-1", url: "https://acme.atlassian.net", name: "acme", scopes: [] },
         { id: "cloud-2", url: "https://other.atlassian.net", name: "other", scopes: [] },
       ]);
-    const { state, verifier } = await signIn("jira");
-    const res = await redeem(state, verifier);
+    const { state, verifier, pickup } = await signIn("jira");
+    const res = await redeem(state, verifier, pickup);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       provider: "jira",
@@ -279,7 +300,7 @@ describe("flows", () => {
   it("google_and_github_return_identity_only", async () => {
     mockGoogle();
     const g = await signIn("google");
-    const gr = await redeem(g.state, g.verifier);
+    const gr = await redeem(g.state, g.verifier, g.pickup);
     expect(gr.status).toBe(200);
     const gj = (await gr.json()) as Record<string, unknown>;
     expect(gj).toEqual({
@@ -292,7 +313,7 @@ describe("flows", () => {
 
     mockGithub();
     const h = await signIn("github");
-    const hr = await redeem(h.state, h.verifier);
+    const hr = await redeem(h.state, h.verifier, h.pickup);
     expect(hr.status).toBe(200);
     const hj = (await hr.json()) as Record<string, unknown>;
     expect(hj).toEqual({
@@ -305,12 +326,10 @@ describe("flows", () => {
   });
 
   it("callback_error_result", async () => {
-    const { state, verifier, callbackResponse } = await signIn("notion", { error: "access_denied" });
+    const { state, verifier, pickup, callbackResponse } = await signIn("notion", { error: "access_denied" });
     expect(callbackResponse.status).toBe(302);
-    expect(callbackResponse.headers.get("location")).toBe(
-      `http://127.0.0.1:${PORT}/api/connect/finish?state=${state}`,
-    );
-    const res = await redeem(state, verifier);
+    expect(finishOf(callbackResponse).state).toBe(state);
+    const res = await redeem(state, verifier, pickup);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ provider: "notion", error: "Notion access wasn't granted." });
   });
@@ -320,9 +339,9 @@ describe("flows", () => {
       .get("https://api.notion.com")
       .intercept({ path: "/v1/oauth/token", method: "POST" })
       .reply(400, { error: "invalid_grant" });
-    const { state, verifier, callbackResponse } = await signIn("notion");
+    const { state, verifier, pickup, callbackResponse } = await signIn("notion");
     expect(callbackResponse.status).toBe(302);
-    const res = await redeem(state, verifier);
+    const res = await redeem(state, verifier, pickup);
     expect(res.status).toBe(200);
     const body = (await res.json()) as { provider: string; error: string };
     expect(body.provider).toBe("notion");
@@ -359,22 +378,49 @@ describe("flows", () => {
 describe("redeem", () => {
   it("redeem_wrong_verifier_403_then_gone", async () => {
     mockNotionToken();
-    const { state, verifier } = await signIn("notion");
-    const wrong = await redeem(state, (await pkce()).verifier);
+    const { state, verifier, pickup } = await signIn("notion");
+    const wrong = await redeem(state, (await pkce()).verifier, pickup);
     expect(wrong.status).toBe(403);
-    const right = await redeem(state, verifier);
+    const right = await redeem(state, verifier, pickup);
     expect(right.status).toBe(404);
+  });
+
+  it("redeem_wrong_pickup_403_then_gone", async () => {
+    mockNotionToken();
+    const { state, verifier, pickup } = await signIn("notion");
+    const wrong = await redeem(state, verifier, randomId(32));
+    expect(wrong.status).toBe(403);
+    const right = await redeem(state, verifier, pickup);
+    expect(right.status).toBe(404);
+  });
+
+  it("redeem_missing_pickup_403_then_gone", async () => {
+    for (const bad of [undefined, "", "short", pickupLike()]) {
+      mockNotionToken();
+      const { state, verifier, pickup } = await signIn("notion");
+      const res = await redeem(state, verifier, bad);
+      expect(res.status, String(bad)).toBe(403);
+      expect((await redeem(state, verifier, pickup)).status).toBe(404);
+    }
+  });
+
+  it("pickup_is_not_stored_in_kv", async () => {
+    mockNotionToken();
+    const { state, pickup } = await signIn("notion");
+    const raw = await env.PENDING.get(`result:${state}`);
+    expect(raw).not.toBeNull();
+    expect(raw).not.toContain(pickup);
   });
 
   it("redeem_twice_404", async () => {
     mockNotionToken();
-    const { state, verifier } = await signIn("notion");
-    expect((await redeem(state, verifier)).status).toBe(200);
-    expect((await redeem(state, verifier)).status).toBe(404);
+    const { state, verifier, pickup } = await signIn("notion");
+    expect((await redeem(state, verifier, pickup)).status).toBe(200);
+    expect((await redeem(state, verifier, pickup)).status).toBe(404);
   });
 
   it("redeem_unknown_state_404", async () => {
-    expect((await redeem(randomId(32), (await pkce()).verifier)).status).toBe(404);
+    expect((await redeem(randomId(32), (await pkce()).verifier, randomId(32))).status).toBe(404);
   });
 
   it("redeem_bad_body_400", async () => {
