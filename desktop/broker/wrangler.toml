@@ -1,0 +1,18 @@
+name = "knowledge-agent-auth"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+
+# In-flight sign-ins only: pending entries (10 min) and encrypted results (2 min).
+# Replace the placeholder id with the one printed by `npx wrangler kv namespace create PENDING`
+# (see README.md).
+[[kv_namespaces]]
+binding = "PENDING"
+id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+
+[vars]
+# Public base URL of this Worker, no trailing slash, e.g. https://knowledge-agent-auth.<you>.workers.dev
+BROKER_URL = ""
+
+# Secrets (set with `npx wrangler secret put <NAME>`, never committed):
+#   NOTION_CLIENT_ID NOTION_CLIENT_SECRET JIRA_CLIENT_ID JIRA_CLIENT_SECRET
+#   GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET GITHUB_CLIENT_ID GITHUB_CLIENT_SECRET RESULT_KEY

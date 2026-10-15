@@ -17,3 +17,8 @@ desktop/dist/
 # Desktop bundle build output
 desktop/tauri/src-tauri/resources/
 desktop/.cache/
+
+# Sign-in Worker (desktop/broker)
+desktop/broker/node_modules/
+.wrangler/
+.dev.vars
