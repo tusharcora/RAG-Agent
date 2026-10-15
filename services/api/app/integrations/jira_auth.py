@@ -5,12 +5,13 @@ from datetime import datetime, timedelta, timezone
 import httpx
 from cryptography.fernet import InvalidToken
 from fastapi import HTTPException
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.crypto import decrypt_token, encrypt_token
 from app.integrations import broker
-from app.integrations.connection_state import require_connected
+from app.integrations.connection_state import disconnected_detail, require_connected
 from app.models.rag import OAuthConnection
 
 logger = logging.getLogger(__name__)
@@ -90,8 +91,26 @@ async def ensure_fresh_token(session: AsyncSession, connection: OAuthConnection)
 
     new_access_token = data["access_token"]
     new_refresh_token = data.get("refresh_token", refresh_token)
-    connection.access_token = encrypt_token(new_access_token)
-    connection.refresh_token = encrypt_token(new_refresh_token)
-    connection.expires_at = now + timedelta(seconds=data.get("expires_in", 3600))
+    values = {
+        "access_token": encrypt_token(new_access_token),
+        "refresh_token": encrypt_token(new_refresh_token),
+        "expires_at": now + timedelta(seconds=data.get("expires_in", 3600)),
+    }
+    # Write only if still connected: a disconnect that committed while this refresh
+    # was in flight must not get live tokens written back onto its wiped row. The
+    # UPDATE also row-locks until commit, so a disconnect arriving now waits and
+    # then wipes what was written. Same guard as the worker's _ensure_fresh_token.
+    result = await session.execute(
+        update(OAuthConnection)
+        .where(OAuthConnection.id == connection.id, OAuthConnection.disconnected_at.is_(None))
+        .values(**values)
+        .returning(OAuthConnection.id)
+        .execution_options(synchronize_session=False)
+    )
+    if result.first() is None:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail=disconnected_detail("jira"))
+    for key, value in values.items():
+        setattr(connection, key, value)
     await session.commit()
     return new_access_token

@@ -335,3 +335,50 @@ def test_knowledge_base_labels_disconnected_documents(client_for, pg_dsn):
     assert detail["from_disconnected_source"] is True
     excluded = client.patch(f"/documents/{items[0]['id']}/exclude", json={"excluded": True}).json()
     assert excluded["from_disconnected_source"] is True
+
+
+@pytest.mark.parametrize("disconnect_midway", [True, False])
+def test_jira_refresh_does_not_write_tokens_onto_a_row_disconnected_midway(
+    client_for, pg_dsn, external, disconnect_midway
+):
+    """A disconnect that commits while a Jira refresh is in flight wins: the refreshed
+    tokens are discarded and the caller gets the same 409 as Sync now."""
+    import threading
+
+    from app.models.rag import OAuthConnection
+
+    client = client_for(mode="server")
+    conn_id = seed(pg_dsn, client.org_id, provider="jira")
+    db_run(pg_dsn, "UPDATE oauth_connections SET expires_at = now() - interval '5 minutes' WHERE id = $1", conn_id)
+
+    def token_endpoint(request):
+        if disconnect_midway:
+            # The disconnect commits from another connection while the refresh request is out.
+            t = threading.Thread(
+                target=client.post, args=(f"/connections/{conn_id}/disconnect",), kwargs={"json": {"remove_documents": False}}
+            )
+            t.start()
+            t.join()
+        return httpx.Response(200, json={"access_token": "fresh-access", "refresh_token": "fresh-refresh", "expires_in": 3600})
+
+    external.handler = token_endpoint
+
+    async def go():
+        async with session_factory(pg_dsn)() as session:
+            connection = await session.get(OAuthConnection, conn_id)
+            return await jira_auth.ensure_fresh_token(session, connection)
+
+    rw_before = row(pg_dsn, conn_id)
+    if disconnect_midway:
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(go())
+        assert exc.value.status_code == 409
+        assert exc.value.detail == "Jira is disconnected. Connect it again to sync."
+        rw = row(pg_dsn, conn_id)
+        assert rw["disconnected_at"] is not None
+        assert rw["access_token"] is None and rw["refresh_token"] is None and rw["expires_at"] is None
+    else:
+        assert asyncio.run(go()) == "fresh-access"
+        rw = row(pg_dsn, conn_id)
+        assert rw["disconnected_at"] is None
+        assert rw["access_token"] != rw_before["access_token"] and rw["expires_at"] > datetime.now(timezone.utc)

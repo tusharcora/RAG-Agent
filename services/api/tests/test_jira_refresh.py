@@ -15,11 +15,21 @@ RECONNECT = "Jira needs reconnecting. Use Reconnect on the Connections page."
 
 
 class FakeSession:
-    def __init__(self):
+    """Stands in for the conditional token UPDATE: matches unless `disconnected`."""
+
+    def __init__(self, disconnected=False):
         self.commits = 0
+        self.rollbacks = 0
+        self.disconnected = disconnected
+
+    async def execute(self, stmt):
+        return SimpleNamespace(first=lambda: None if self.disconnected else ("c1",))
 
     async def commit(self):
         self.commits += 1
+
+    async def rollback(self):
+        self.rollbacks += 1
 
 
 @pytest.fixture
