@@ -116,10 +116,10 @@ async function handleStart(provider: string, url: URL, env: Env): Promise<Respon
   if (!Number.isInteger(port) || port < 1024 || port > 65535) return page(INVALID, 400);
   if (!brokerBase(env)) return page("The sign-in service isn't configured yet.", 500);
 
-  // A state is good for exactly one sign-in: the `seen:` marker outlives the pending entry's consumption.
-  if ((await env.PENDING.get(kSeen(state))) !== null || (await env.PENDING.get(kPending(state))) !== null) {
-    return page(EXPIRED, 400);
-  }
+  // A state is good for exactly one sign-in: the `seen:` marker is written alongside the pending entry and
+  // outlives its consumption. (No read of `pending:` here — a miss would be cached by KV for up to 60 s and could
+  // hide the entry from /callback.)
+  if ((await env.PENDING.get(kSeen(state))) !== null) return page(EXPIRED, 400);
   const pending: Pending = { provider, challenge, port };
   await env.PENDING.put(kSeen(state), "1", { expirationTtl: PENDING_TTL });
   await env.PENDING.put(kPending(state), JSON.stringify(pending), { expirationTtl: PENDING_TTL });

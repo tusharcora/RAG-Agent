@@ -200,6 +200,8 @@ describe("start", () => {
     const { challenge } = await pkce();
     const state = randomId(32);
     expect((await start("notion", { state, challenge, port: PORT })).status).toBe(302);
+    // Single use rests on the `seen:` marker alone (no read of `pending:` at /start, which KV would negative-cache).
+    expect(await env.PENDING.get(`seen:${state}`)).not.toBeNull();
     const again = await start("notion", { state, challenge, port: PORT });
     expect(again.status).toBe(400);
     expect(again.headers.get("location")).toBeNull();
