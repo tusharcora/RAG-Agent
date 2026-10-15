@@ -347,8 +347,10 @@ def path_d() -> None:
             with ctx.expect_page() as popup_info:
                 page.get_by_role("button", name="Continue with Google").click()
             popup = popup_info.value
-            expect(popup.get_by_text("Signed in as E2E Person")).to_be_visible(timeout=20000)
-            expect(popup.get_by_text("You can close this tab and go back to Knowledge Agent.")).to_be_visible()
+            expect(popup.get_by_role("heading", name="Welcome, E2E.")).to_be_visible(timeout=20000)
+            expect(popup.get_by_text("E2E Person", exact=True)).to_be_visible()
+            expect(popup).to_have_title(re.compile(r"^Signed in as E2E Person"))
+            popup.screenshot(path=os.environ.get("E2E_SHOTS", "/tmp") + "/finish-signed-in.png")
             popup.close()
             print("D: Google popup landed on 'Signed in as E2E Person'")
             # The app moves on to the next setup step by itself (models are already installed).
@@ -361,7 +363,8 @@ def path_d() -> None:
             with ctx.expect_page() as popup_info:
                 page.get_by_role("button", name="Connect Notion").click()
             popup = popup_info.value
-            expect(popup.get_by_text("Connected to Notion")).to_be_visible(timeout=20000)
+            expect(popup.get_by_role("heading", name="Notion is connected.")).to_be_visible(timeout=20000)
+            popup.screenshot(path=os.environ.get("E2E_SHOTS", "/tmp") + "/finish-connected.png")
             popup.close()
             expect(page.get_by_text("E2E Workspace").first).to_be_visible(timeout=20000)
             print("D: Notion popup landed on 'Connected to Notion'; card shows the workspace")
@@ -383,7 +386,7 @@ def path_d() -> None:
             with ctx.expect_page() as popup_info:
                 page.get_by_role("button", name="Continue with GitHub").click()
             popup = popup_info.value
-            expect(popup.get_by_text("Signed in as E2E Person")).to_be_visible(timeout=20000)
+            expect(popup.get_by_role("heading", name="Welcome, E2E.")).to_be_visible(timeout=20000)
             popup.close()
             expect(page.get_by_text("signed in with GitHub")).to_be_visible(timeout=20000)
             print("D: signed in again from Settings with GitHub")

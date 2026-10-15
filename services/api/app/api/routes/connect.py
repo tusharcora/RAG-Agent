@@ -15,7 +15,6 @@ states, tokens or identities from this module.
 
 import base64
 import hashlib
-import html
 import logging
 import secrets
 import time
@@ -23,11 +22,13 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Literal
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api import connect_page
 from app.core.auth import AuthContext, require_auth, require_role
 from app.core.config import settings
 from app.core.db import get_session
@@ -42,7 +43,6 @@ IDENTITY_PURPOSES = ("google", "github")
 DISPLAY_NAME = {"notion": "Notion", "jira": "Jira", "google": "Google", "github": "GitHub"}
 
 NOT_CONFIGURED = "Sign-in service isn't configured."
-CLOSE_TAB = "You can close this tab and go back to Knowledge Agent."
 FAILED = "Couldn't finish signing in. Start again from the app."
 
 
@@ -123,42 +123,26 @@ async def start(purpose: str, request: Request, auth: AuthContext = Depends(_own
     return {"state": state, "url": broker.start_url(purpose, state, _challenge(verifier), port)}
 
 
-def _page(headline: str, detail: str | None = None) -> HTMLResponse:
-    detail_html = f"<p>{html.escape(detail)}</p>" if detail else ""
-    body = f"""<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Knowledge Agent</title>
-<style>
-:root{{color-scheme:light dark}}
-body{{margin:0;font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;background:#f6f7f9;color:#1f2328}}
-main{{max-width:30rem;margin:5rem auto;padding:2rem;background:#fff;border:1px solid #d8dee4;border-radius:12px}}
-h1{{font-size:.85rem;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:#59636e;margin:0 0 1rem}}
-.headline{{font-size:1.25rem;font-weight:600;margin:0 0 .5rem}}
-p{{margin:0;color:#59636e}}
-@media (prefers-color-scheme:dark){{
-body{{background:#0d1117;color:#e6edf3}}
-main{{background:#161b22;border-color:#30363d}}
-h1,p{{color:#9198a1}}
-}}
-@media (max-width:34rem){{main{{margin:2rem 1rem;padding:1.5rem}}}}
-</style></head>
-<body><main><h1>Knowledge Agent</h1><div class="headline">{html.escape(headline)}</div>{detail_html}</main></body></html>"""
-    return HTMLResponse(
-        body,
-        status_code=200,
-        headers={
-            "Cache-Control": "no-store",
-            "Referrer-Policy": "no-referrer",
-            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
-            "X-Content-Type-Options": "nosniff",
-            "X-Frame-Options": "DENY",
-        },
-    )
-
-
 def _fail(flow: Flow, message: str) -> HTMLResponse:
     flow.status, flow.message = "error", message
-    return _page(message)
+    return connect_page.render("error", flow.purpose, title=message, message=message)
+
+
+def _expired() -> HTMLResponse:
+    return connect_page.render("error", None, title=broker.EXPIRED, message=broker.EXPIRED)
+
+
+@router.get("/assets/{name}")
+async def asset(name: str) -> FileResponse:
+    """Fonts for the finish page (bundled, so the page works offline)."""
+    path = connect_page.asset_path(name)
+    if path is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    return FileResponse(
+        path,
+        media_type=connect_page.ASSET_TYPES[path.suffix],
+        headers={"Cache-Control": "public, max-age=604800", "X-Content-Type-Options": "nosniff"},
+    )
 
 
 @router.get("/finish")
@@ -167,7 +151,7 @@ async def finish(state: str = "", pickup: str = "", session: AsyncSession = Depe
     flow = _FLOWS.get(state)
     # No pickup: not a redirect from the Worker's callback. Leave the flow alone (don't burn it) and say expired.
     if flow is None or flow.status != "pending" or flow.redeeming or not pickup:
-        return _page(broker.EXPIRED)
+        return _expired()
 
     flow.redeeming = True
     try:
@@ -186,11 +170,16 @@ async def finish(state: str = "", pickup: str = "", session: AsyncSession = Depe
         try:
             if flow.purpose == "notion":
                 await save_notion_connection(session, flow.org_id, result)
-                headline = f"Connected to {name} ✓"
+                headline = f"Connected to {name}"
+                kind = "connected"
+                card = connect_page.Card(result.get("workspace_name") or "Notion workspace", "Notion workspace")
             elif flow.purpose == "jira":
                 site = {"id": result["cloud_id"], "url": result["site_url"], "name": result.get("site_name")}
                 await save_jira_connection(session, flow.org_id, result, site)
-                headline = f"Connected to {name} ✓"
+                headline = f"Connected to {name}"
+                kind = "connected"
+                host = urlparse(result["site_url"]).netloc or result["site_url"]
+                card = connect_page.Card(result.get("site_name") or host, host)
             else:
                 handler = IDENTITY_HANDLER
                 if handler is None or flow.user_id is None:
@@ -200,13 +189,16 @@ async def finish(state: str = "", pickup: str = "", session: AsyncSession = Depe
                 except ValueError as exc:
                     return _fail(flow, str(exc) or FAILED)
                 headline = f"Signed in as {display}"
+                kind = "signed_in"
+                email = result.get("email")
+                card = connect_page.Card(display, email if email and email != display else None)
         except Exception as exc:  # noqa: BLE001 - the page must not 500; keep tokens out of the log
             logger.error("saving the %s sign-in failed: %s", flow.purpose, type(exc).__name__)
             await session.rollback()
             return _fail(flow, FAILED)
 
         flow.status, flow.message = "done", headline
-        return _page(headline, CLOSE_TAB)
+        return connect_page.render(kind, flow.purpose, title=headline, card=card)
     finally:
         flow.redeeming = False
 

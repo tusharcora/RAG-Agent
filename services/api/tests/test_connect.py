@@ -187,8 +187,9 @@ def test_finish_notion_saves_connection(client_for, fake_broker, pg_dsn):
     assert r.headers["content-type"].startswith("text/html")
     assert r.headers["cache-control"] == "no-store"
     assert r.headers["referrer-policy"] == "no-referrer"
-    assert "Connected to Notion" in r.text
-    assert "You can close this tab and go back to Knowledge Agent." in r.text
+    assert "Connected to Notion" in r.text  # tab title
+    assert "Notion is <em>connected</em>." in r.text
+    assert "You can close this tab." in r.text
     assert "secret-notion-token" not in r.text and "<script" not in r.text
     rows = _rows(pg_dsn, client.org_id, "notion")
     assert len(rows) == 1
@@ -444,3 +445,29 @@ def test_server_callbacks_unchanged(make_client, external, pg_dsn, monkeypatch):
     assert row["workspace_name"] == "Acme Notes"
     assert Fernet(settings.token_encryption_key.encode()).decrypt(row["access_token"].encode()) == b"secret-notion-token"
     assert fake.data == {}
+
+
+def test_finish_page_shows_logo_when_the_official_file_exists(client_for, fake_broker, pg_dsn, tmp_path, monkeypatch):
+    static = tmp_path / "ui"
+    (static / "brand").mkdir(parents=True)
+    monkeypatch.setenv("DESKTOP_STATIC_DIR", str(static))
+    client = client_for(db=True)
+    state = _start(client, fake_broker, "notion", NOTION_RESULT)
+    page = client.get("/connect/finish", params=fin(state)).text
+    assert '<span class="name">Notion</span>' in page and "<img" not in page  # no file yet: the name stands in
+    (static / "brand" / "notion.svg").write_text("<svg xmlns='http://www.w3.org/2000/svg'/>")
+    state = _start(client, fake_broker, "notion", NOTION_RESULT)
+    page = client.get("/connect/finish", params=fin(state)).text
+    assert '<img src="/brand/notion.svg" alt="Notion">' in page
+
+
+def test_finish_page_fonts_are_served_and_nothing_else(client_for):
+    client = client_for(db=True)
+    r = client.get("/connect/assets/InstrumentSerif-Regular.ttf")
+    assert r.status_code == 200 and r.headers["content-type"] == "font/ttf" and len(r.content) > 10_000
+    for name in ("README.md", "GeistMono-OFL.txt", "..%2Fconnect_page.py", "nope.ttf"):
+        assert client.get(f"/connect/assets/{name}").status_code == 404
+
+
+def test_finish_assets_404_in_server_mode(client_for):
+    assert client_for(mode="server").get("/connect/assets/InstrumentSerif-Regular.ttf").status_code == 404
