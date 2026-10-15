@@ -251,3 +251,16 @@ def test_child_env_passes_broker_url(tmp_path, monkeypatch):
     monkeypatch.setenv("AUTH_BROKER_URL", "https://override.example.workers.dev")
     env = launcher.child_env("http://127.0.0.1:1", "postgresql://u@/db", tmp_path, paths)
     assert env["AUTH_BROKER_URL"] == "https://override.example.workers.dev"
+
+
+def test_child_env_passes_github_api_url(tmp_path, monkeypatch):
+    paths = launcher.resolve_paths(None)
+    monkeypatch.delenv("GITHUB_API_URL", raising=False)
+    env = launcher.child_env("http://127.0.0.1:1", "postgresql://u@/db", tmp_path, paths)
+    assert env["GITHUB_API_URL"] == "https://api.github.com"
+    monkeypatch.setenv("GITHUB_API_URL", "")
+    env = launcher.child_env("http://127.0.0.1:1", "postgresql://u@/db", tmp_path, paths)
+    assert env["GITHUB_API_URL"] == "https://api.github.com"
+    monkeypatch.setenv("GITHUB_API_URL", "http://127.0.0.1:47861")
+    env = launcher.child_env("http://127.0.0.1:1", "postgresql://u@/db", tmp_path, paths)
+    assert env["GITHUB_API_URL"] == "http://127.0.0.1:47861"

@@ -213,6 +213,7 @@ def start_database(home: Path):
 # builds bake the address in here. Empty = Connect/sign-in hidden. The
 # AUTH_BROKER_URL environment variable overrides it (development).
 DEFAULT_AUTH_BROKER_URL = ""
+DEFAULT_GITHUB_API_URL = "https://api.github.com"
 
 
 def child_env(base_url: str, db_uri: str, home: Path, paths: Paths) -> dict:
@@ -242,6 +243,8 @@ def child_env(base_url: str, db_uri: str, home: Path, paths: Paths) -> dict:
             "KA_LAUNCHER_PID": str(os.getpid()),
             "PYTHONUNBUFFERED": "1",
             "AUTH_BROKER_URL": os.environ.get("AUTH_BROKER_URL", DEFAULT_AUTH_BROKER_URL),
+            # GitHub's REST API for the GitHub source (api and worker); overridable for tests.
+            "GITHUB_API_URL": os.environ.get("GITHUB_API_URL") or DEFAULT_GITHUB_API_URL,
         }
     )
     # Provider keys come only from this install's secrets.json, never from

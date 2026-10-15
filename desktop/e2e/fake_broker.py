@@ -10,6 +10,7 @@ POST /redeem {state, verifier, pickup}
                              canned result, once; 403 wrong verifier or wrong/missing
                              pickup (entry burnt), 404 unknown
 POST /refresh/jira           canned tokens
+POST /refresh/github_repos   canned tokens
 """
 
 from __future__ import annotations
@@ -37,6 +38,10 @@ RESULTS = {
              "site_name": "e2e"},
     "google": {"provider": "google", "provider_user_id": "g-e2e-1", "email": "e2e@example.test", "name": "E2E Person"},
     "github": {"provider": "github", "provider_user_id": "gh-e2e-1", "email": "e2e@example.test", "name": "E2E Person"},
+    "github_repos": {"provider": "github_repos", "access_token": "ghu_e2e_token", "refresh_token": "ghr_e2e_refresh",
+                     "expires_in": 28800, "refresh_token_expires_in": 15897600, "user_id": 4242,
+                     "login": "e2e-octo", "app_slug": "e2e-app",
+                     "installations": [{"id": 99, "account_login": "e2e-octo", "account_type": "User"}]},
 }
 
 LOCK = threading.Lock()
@@ -109,6 +114,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._redeem(body)
         if path == "/refresh/jira":
             return self._json({"access_token": "jira-e2e-new", "refresh_token": "jira-e2e-refresh", "expires_in": 3600})
+        if path == "/refresh/github_repos":
+            return self._json({"access_token": "ghu_e2e_new", "refresh_token": "ghr_e2e_refresh",
+                               "expires_in": 28800, "refresh_token_expires_in": 15897600})
         self._send(404, b"not found")
 
     def _redeem(self, body: dict | None):

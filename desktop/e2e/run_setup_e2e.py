@@ -5,6 +5,7 @@
 Needs the bundle (python desktop/build_backend.py) and Playwright's Chromium.
 Path A: local models via a fake Ollama.  Path B: API keys against local stubs.
 Path C: models already installed.  Path D: Connect and sign-in via a fake sign-in Worker.
+Path G: connect GitHub through the fake sign-in Worker and a fake GitHub API, sync, disconnect.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ BACKEND = HERE.parent / "tauri" / "src-tauri" / "resources" / "backend"
 PY = BACKEND / "python" / "bin" / "python"
 CHROMIUM = os.environ.get("CHROMIUM")  # path to a Chromium binary; unset = Playwright's own
 HOMES: list[str] = []  # every data folder this run created, for the leak check
-FAKE_PORT, APP_PORT, STUB_PORT, BROKER_PORT = 11499, 47831, 47841, 47851
+FAKE_PORT, APP_PORT, STUB_PORT, BROKER_PORT, GITHUB_PORT = 11499, 47831, 47841, 47851, 47861
 GOOD_VOYAGE, GOOD_ANTHROPIC = "pa-good", "sk-ant-good"
 
 
@@ -194,6 +195,26 @@ asyncio.run(main(sys.argv[1]))
     pid = Path(home, "pgdata", "postmaster.pid").read_text().splitlines()
     sock = pid[4].strip()
     subprocess.run([str(PY), "-I", "-c", code, sock], check=True)
+
+
+def github_state(home: str) -> dict:
+    """Chunk text of the synced GitHub documents and the GitHub events that didn't succeed."""
+    code = r'''
+import asyncio, json, sys
+import asyncpg
+
+async def main(sock):
+    c = await asyncpg.connect(host=sock, user="postgres", database="postgres")
+    rows = await c.fetch("select d.title, string_agg(ch.content, ' ') as text from documents d join chunks ch on ch.document_id = d.id where d.source = 'github' group by d.title")
+    bad = await c.fetch("select routing_key, status from event_log where routing_key like 'rag.github%' and status not in ('succeeded', 'received', 'processing')")
+    print(json.dumps({"chunks": {r["title"]: r["text"] for r in rows}, "unsuccessful": [dict(r) for r in bad]}))
+    await c.close()
+
+asyncio.run(main(sys.argv[1]))
+'''
+    pid = Path(home, "pgdata", "postmaster.pid").read_text().splitlines()
+    sock = pid[4].strip()
+    return json.loads(subprocess.run([str(PY), "-I", "-c", code, sock], check=True, capture_output=True, text=True).stdout)
 
 
 def launch_browser(p):
@@ -511,6 +532,113 @@ def path_d_off() -> None:
     print("PASS path D-off (feature off)")
 
 
+def fake_github(port: int) -> subprocess.Popen:
+    p = subprocess.Popen([sys.executable, str(HERE / "fake_github.py"), "--port", str(port)])
+    try:
+        wait_http(f"http://127.0.0.1:{port}/_requests")
+    except BaseException:
+        p.terminate()
+        p.wait()
+        raise
+    return p
+
+
+def path_g() -> None:
+    """Connect GitHub through the fake sign-in Worker and a fake GitHub API, sync, see the documents, disconnect."""
+    home = tempfile.mkdtemp(prefix="ka-e2e-g-", dir="/tmp")
+    os.chmod(home, 0o755)
+    HOMES.append(home)
+    shots = os.environ.get("E2E_SHOTS", "/tmp")
+    ollama = broker = github = launcher = None
+    try:
+        ollama = fake_ollama(FAKE_PORT, models="nomic-embed-text:latest,qwen3.6:35b")
+        broker = fake_broker(BROKER_PORT)
+        github = fake_github(GITHUB_PORT)
+        launcher = Launcher(home, {
+            "OLLAMA_URL": f"http://127.0.0.1:{FAKE_PORT}",
+            "AUTH_BROKER_URL": f"http://127.0.0.1:{BROKER_PORT}",
+            "GITHUB_API_URL": f"http://127.0.0.1:{GITHUB_PORT}",
+        })
+        with sync_playwright() as p:
+            b = launch_browser(p)
+            ctx = b.new_context()
+            page = ctx.new_page()
+            page.goto(launcher.url)
+            page.wait_for_url(re.compile(r"/setup/?$"), timeout=30000)
+            expect(page.get_by_text("yours", exact=True)).to_be_visible(timeout=10000)
+            page.get_by_role("button", name="Skip for now").click()
+            expect(page.get_by_role("heading", name="Your models are ready")).to_be_visible(timeout=20000)
+            page.get_by_role("button", name="Continue", exact=True).click()
+            page.wait_for_url(re.compile(r"/connections/?$"), timeout=90000)
+            print("G: setup finished, on /connections/")
+
+            card = page.locator("section").filter(has_text=re.compile(r"^GitHub"))
+            with ctx.expect_page() as popup_info:
+                card.get_by_role("button", name="Connect GitHub").click()
+            popup = popup_info.value
+            expect(popup.get_by_role("heading", name="GitHub is connected.")).to_be_visible(timeout=20000)
+            expect(popup.get_by_text("e2e-octo", exact=True)).to_be_visible()
+            expect(popup.get_by_text("1 repository", exact=True)).to_be_visible()
+            popup.screenshot(path=f"{shots}/github-finish.png")
+            popup.close()
+            print("G: GitHub popup landed on 'GitHub is connected.' with '1 repository'")
+
+            # Connecting starts the first sync, which lists the repositories.
+            expect(card.get_by_text(re.compile(r"^1 repositor"))).to_be_visible(timeout=30000)
+            expect(card.get_by_text("e2e-octo").first).to_be_visible()
+            print("G: card shows e2e-octo and 1 repository")
+            card.get_by_role("button", name="Sync now").click()
+
+            page.goto(launcher.url.rstrip("/") + "/knowledge-base/")
+            titles = ["e2e-octo/notes · README.md", "e2e-octo/notes #1: Ship it"]
+            deadline = time.time() + 60
+            while True:
+                if all(page.get_by_text(t, exact=True).count() for t in titles):
+                    break
+                if time.time() > deadline:
+                    print("G FAILED; page text:", page.locator("body").inner_text()[:1500])
+                    print("launcher output:", *launcher.lines[-60:], sep="\n")
+                    raise AssertionError(f"knowledge base never listed {titles}")
+                page.wait_for_timeout(2000)
+                page.reload()
+            print("G: knowledge base lists the README and issue #1")
+            state = github_state(home)
+            assert "BLUEBIRD" in state["chunks"].get(titles[0], ""), state
+            assert "Approved for Friday." in state["chunks"].get(titles[1], ""), state
+            assert state["unsuccessful"] == [], state
+            print("G: README and issue (with its comment) embedded; no GitHub event failed")
+
+            page.goto(launcher.url.rstrip("/") + "/connections/")
+            card = page.locator("section").filter(has_text=re.compile(r"^GitHub"))
+            expect(card.get_by_role("button", name="Disconnect", exact=True)).to_be_visible(timeout=20000)
+            card.screenshot(path=f"{shots}/github-card-connected.png")
+            card.get_by_role("button", name="Disconnect", exact=True).click()
+            dialog = page.get_by_role("dialog", name="Disconnect GitHub?")
+            expect(dialog.get_by_role("radio", name=re.compile(r"Remove its 2 synced documents too"))).to_be_checked()
+            dialog.get_by_role("button", name="Disconnect", exact=True).click()
+            expect(card.get_by_role("button", name="Connect GitHub")).to_be_visible(timeout=20000)
+            expect(page.get_by_text("Disconnected ·")).to_have_count(0)
+            print("G: disconnected removing documents; card back to 'Connect GitHub'")
+
+            page.goto(launcher.url.rstrip("/") + "/knowledge-base/")
+            page.wait_for_timeout(2000)
+            for t in titles:
+                expect(page.get_by_text(t, exact=True)).to_have_count(0)
+            print("G: knowledge base no longer lists the GitHub documents")
+            b.close()
+        asked = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{GITHUB_PORT}/_requests").read())["requests"]
+        for path in ("/user/installations", "/repos/e2e-octo/notes/git/trees/main", "/repos/e2e-octo/notes/issues/1/comments"):
+            assert path in asked, f"fake GitHub never asked for {path}: {asked}"
+    finally:
+        if launcher:
+            launcher.stop()
+        for proc in (github, broker, ollama):
+            if proc:
+                proc.terminate()
+                proc.wait()
+    print("PASS path G (GitHub source)")
+
+
 def main() -> int:
     try:
         path_a()
@@ -518,6 +646,7 @@ def main() -> int:
         path_b()
         path_d()
         path_d_off()
+        path_g()
     finally:
         time.sleep(1)
         left = sorted({pid for h in HOMES for pid in leftovers(h)})
