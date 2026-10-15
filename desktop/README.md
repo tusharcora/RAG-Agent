@@ -40,8 +40,10 @@ python3.12 -m venv .venv-desktop
 It opens http://127.0.0.1:47821 in your browser. Ctrl-C stops everything,
 Postgres included. Python 3.12 is the newest version pgserver has wheels for.
 
-Data lives in `~/Library/Application Support/Knowledge Agent` (macOS) or
-`%LOCALAPPDATA%\Knowledge Agent` (Windows): the database and a
+Data lives in `~/Library/Application Support/Knowledge Agent` (macOS),
+`%LOCALAPPDATA%\tusharcora\Knowledge Agent` (Windows; the publisher folder keeps it
+out of the installer's `%LOCALAPPDATA%\Knowledge Agent`) or
+`~/.local/share/Knowledge Agent` (Linux): the database and a
 `secrets.json` with this install's signing and encryption keys. Delete the
 folder to start over. Set `KNOWLEDGE_AGENT_HOME` to use a different folder.
 
@@ -87,6 +89,21 @@ Anthropic stubs). Both should print `PASS`, and the final "leftover processes" l
 
 Troubleshooting: the backend's output is in `backend.log` in the app's log folder
 (macOS: `~/Library/Logs/com.tusharcora.knowledgeagent/backend.log`).
+
+## Security model
+
+The desktop app is meant for a single-user machine.
+
+- The app listens only on 127.0.0.1, and refuses requests whose `Host` is anything
+  other than `127.0.0.1` or `localhost` (so a web page that re-points its own
+  domain at your machine, DNS rebinding, gets a 400).
+- There's no sign-in: the app gives an owner session to whatever reaches it locally.
+  Any program running as you can therefore use it, read your synced pages and chat
+  history, and change its settings.
+- On Windows, the embedded Postgres accepts local TCP connections without a
+  password, so other accounts on the same machine could reach the database directly.
+  On macOS and Linux it only listens on a socket in a folder private to you.
+  Hardening (a generated database password, `scram-sha-256` auth) is planned for M3.
 
 ## Notes
 

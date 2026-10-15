@@ -53,7 +53,7 @@ PYTHON_BUILDS: dict[str, tuple[str, str]] = {
 }
 
 # Names (fnmatch) skipped when copying the api/worker source.
-COPY_EXCLUDES = ("__pycache__", "tests", ".env*", "*.pyc", "Dockerfile")
+COPY_EXCLUDES = ("__pycache__", "tests", ".env*", "*.pyc", "Dockerfile", ".venv*", ".pytest_cache", "node_modules")
 
 
 def detect_target(system: str | None = None, machine: str | None = None) -> str:

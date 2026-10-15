@@ -40,3 +40,8 @@ def test_copy_excludes(tmp_path):
     shutil.copytree(src, dst, ignore=bb.ignore_copy)
     kept = sorted(str(p.relative_to(dst)) for p in dst.rglob("*") if p.is_file())
     assert kept == ["app/main.py", "requirements.txt"]
+
+
+def test_copy_excludes_dev_folders():
+    names = [".venv", ".venv-desktop", ".pytest_cache", "node_modules", ".env", "__pycache__", "tests", "app", "requirements.txt"]
+    assert bb.ignore_copy("x", names) == set(names) - {"app", "requirements.txt"}
