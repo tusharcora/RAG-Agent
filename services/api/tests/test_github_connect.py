@@ -180,12 +180,27 @@ def test_reconnect_same_user_keeps_documents(client_for, fake_broker, gh, pg_dsn
     _connect(client, fake_broker)
     (row,) = _rows(pg_dsn, client.org_id, "github")
     _seed_synced(pg_dsn, row["id"])
-    db_run(pg_dsn, "UPDATE oauth_connections SET needs_reconnect_at = now(), disconnected_at = now() WHERE id = $1", row["id"])
+    db_run(pg_dsn, "UPDATE oauth_connections SET needs_reconnect_at = now() WHERE id = $1", row["id"])
     _connect(client, fake_broker, {**RESULT, "access_token": "ghu_new"})
     (again,) = _rows(pg_dsn, client.org_id, "github")
     assert again["id"] == row["id"] and again["needs_reconnect_at"] is None and again["disconnected_at"] is None
     assert Fernet(settings.token_encryption_key.encode()).decrypt(again["access_token"].encode()) == b"ghu_new"
     assert _counts(pg_dsn, row["id"]) == (1, 1, 1)
+
+
+def test_reconnect_after_disconnect_resets_sync_state(client_for, fake_broker, gh, pg_dsn, monkeypatch):
+    # A sync still running when Disconnect landed can write repo cursors after Disconnect reset them;
+    # reconnecting starts the cursors over (documents of the same user are kept).
+    monkeypatch.setattr(settings, "token_encryption_key", Fernet.generate_key().decode())
+    client = client_for(db=True)
+    _connect(client, fake_broker)
+    (row,) = _rows(pg_dsn, client.org_id, "github")
+    _seed_synced(pg_dsn, row["id"])
+    db_run(pg_dsn, "UPDATE oauth_connections SET needs_reconnect_at = now(), disconnected_at = now() WHERE id = $1", row["id"])
+    _connect(client, fake_broker, {**RESULT, "access_token": "ghu_new"})
+    (again,) = _rows(pg_dsn, client.org_id, "github")
+    assert again["id"] == row["id"] and again["needs_reconnect_at"] is None and again["disconnected_at"] is None
+    assert _counts(pg_dsn, row["id"]) == (1, 0, 0)
 
 
 def test_reconnect_other_user_deletes_documents_and_state(client_for, fake_broker, gh, pg_dsn, monkeypatch):

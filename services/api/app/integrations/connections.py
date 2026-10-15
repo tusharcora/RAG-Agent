@@ -98,7 +98,8 @@ async def save_github_connection(session: AsyncSession, org_id: uuid.UUID, resul
     """`result` is a GitHub App user token plus identity: access_token, refresh_token,
     expires_in, user_id, login and (desktop only) app_slug. Installations are not stored;
     each sync lists them with the user's token. Reconnecting as a different GitHub user
-    deletes the old user's documents and sync state (see `_reuse_row`)."""
+    deletes the old user's documents and sync state (see `_reuse_row`); reconnecting a
+    disconnected row always resets the sync state."""
     now = datetime.now(timezone.utc)
     login = result["login"]
     user_id = str(result["user_id"])
@@ -110,6 +111,10 @@ async def save_github_connection(session: AsyncSession, org_id: uuid.UUID, resul
         connection = OAuthConnection(id=uuid.uuid4(), org_id=org_id, provider="github", access_token="")
         session.add(connection)
     else:
+        if connection.disconnected_at is not None:
+            # A sync that was still running when Disconnect landed may have written repo cursors
+            # back after Disconnect reset them: start the cursors over (documents follow the rule below).
+            await reset_github_state(session, connection.id)
         await _reuse_row(session, connection, user_id)
 
     connection.workspace_id = user_id
