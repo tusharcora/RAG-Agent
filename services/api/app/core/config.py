@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     otel_service_name: str = "api"
     # Folder holding desktop.json / secrets.json (set by desktop/launcher.py).
     desktop_data_dir: str = ""
+    # The sign-in Worker (desktop/broker) that runs OAuth for the desktop app
+    # (env AUTH_BROKER_URL, set by desktop/launcher.py). Empty = feature off.
+    auth_broker_url: str = ""
 
     cors_origins: list[str] = ["http://localhost:3001", "http://localhost:3000"]
     frontend_url: str = "http://localhost:3001"

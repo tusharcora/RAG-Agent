@@ -59,13 +59,15 @@ def make_client(tmp_path, monkeypatch, request):
     """Build a test app with just the setup router (no lifespan). Pass
     db=True to back it with the pgserver database and a real org + user."""
 
-    def _make(handler, mode="desktop", role="owner", db=False):
+    def _make(handler=None, mode="desktop", role="owner", db=False, routers=None, base_url="http://testserver"):
         monkeypatch.setattr(settings, "app_mode", mode)
         monkeypatch.setattr(settings, "desktop_data_dir", str(tmp_path))
-        monkeypatch.setattr(ollama, "TRANSPORT", httpx.MockTransport(handler))
+        if handler is not None:
+            monkeypatch.setattr(ollama, "TRANSPORT", httpx.MockTransport(handler))
         setup_routes._IN_FLIGHT.clear()
         app = FastAPI()
-        app.include_router(setup_routes.router, prefix="/setup")
+        for router, prefix in routers or [(setup_routes.router, "/setup")]:
+            app.include_router(router, prefix=prefix)
         org_id, user_id = uuid.uuid4(), uuid.uuid4()
         if db:
             from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -87,8 +89,9 @@ def make_client(tmp_path, monkeypatch, request):
 
             app.dependency_overrides[get_session] = _session
         app.dependency_overrides[require_auth] = lambda: AuthContext(org_id=org_id, role=role, user_id=user_id)
-        client = TestClient(app)
+        client = TestClient(app, base_url=base_url)
         client.org_id = org_id
+        client.user_id = user_id
         return client
 
     yield _make

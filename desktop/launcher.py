@@ -209,6 +209,12 @@ def start_database(home: Path):
 # --- Processes ------------------------------------------------------------
 
 
+# The deployed sign-in Worker (desktop/broker) this build talks to; release
+# builds bake the address in here. Empty = Connect/sign-in hidden. The
+# AUTH_BROKER_URL environment variable overrides it (development).
+DEFAULT_AUTH_BROKER_URL = ""
+
+
 def child_env(base_url: str, db_uri: str, home: Path, paths: Paths) -> dict:
     keys = desktop_config.load_secrets(home)
     config = desktop_config.load(home)
@@ -235,6 +241,7 @@ def child_env(base_url: str, db_uri: str, home: Path, paths: Paths) -> dict:
             # Children exit if this process disappears without stopping them.
             "KA_LAUNCHER_PID": str(os.getpid()),
             "PYTHONUNBUFFERED": "1",
+            "AUTH_BROKER_URL": os.environ.get("AUTH_BROKER_URL", DEFAULT_AUTH_BROKER_URL),
         }
     )
     # Provider keys come only from this install's secrets.json, never from

@@ -1,20 +1,17 @@
 import logging
 import secrets
 import uuid
-from datetime import datetime, timedelta, timezone
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import AuthContext, require_auth
 from app.core.config import settings
-from app.core.crypto import encrypt_token
 from app.core.db import get_session
 from app.core.redis import get_redis
-from app.models.rag import OAuthConnection
+from app.integrations.connections import save_jira_connection
 
 logger = logging.getLogger(__name__)
 
@@ -90,24 +87,5 @@ async def callback(
         raise HTTPException(status_code=400, detail="No accessible Jira sites for this account")
     site = resources[0]  # single-tenant: first accessible site
 
-    now = datetime.now(timezone.utc)
-    result = await session.execute(
-        select(OAuthConnection).where(OAuthConnection.provider == "jira", OAuthConnection.org_id == org_id)
-    )
-    connection = result.scalar_one_or_none()
-    if connection is None:
-        connection = OAuthConnection(id=uuid.uuid4(), org_id=org_id, provider="jira", access_token="")
-        session.add(connection)
-
-    connection.workspace_id = site["id"]  # Jira Cloud id, used in api.atlassian.com/ex/jira/{id}/... calls
-    connection.workspace_name = site.get("name") or site["url"]
-    connection.site_url = site["url"]
-    connection.access_token = encrypt_token(token_data["access_token"])
-    connection.refresh_token = encrypt_token(token_data.get("refresh_token"))
-    connection.expires_at = now + timedelta(seconds=token_data.get("expires_in", 3600))
-    connection.bot_id = None
-    connection.updated_at = now
-    await session.commit()
-
-    logger.info("Jira connected: site=%s", connection.workspace_name)
+    await save_jira_connection(session, org_id, token_data, site)
     return RedirectResponse(f"{settings.frontend_url}/connections?connected=jira")

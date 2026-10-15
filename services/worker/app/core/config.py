@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     # embedding_dimensions, which nomic's Matryoshka training supports).
     embedding_provider: str = "voyage"
     ollama_url: str = "http://127.0.0.1:11434"
+    # The sign-in Worker (desktop/broker) that runs OAuth for the desktop app
+    # (env AUTH_BROKER_URL, set by desktop/launcher.py). Empty = feature off.
+    auth_broker_url: str = ""
     ollama_embed_model: str = "nomic-embed-text"
     otel_service_name: str = "worker"
 
