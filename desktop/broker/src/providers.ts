@@ -1,6 +1,6 @@
 // Provider-specific authorize URLs and code exchanges. Client secrets are only ever sent server-to-server here.
 
-export const PROVIDERS = ["notion", "jira", "google", "github"] as const;
+export const PROVIDERS = ["notion", "jira", "google", "github", "github_repos"] as const;
 export type Provider = (typeof PROVIDERS)[number];
 
 export function isProvider(p: string): p is Provider {
@@ -12,6 +12,7 @@ export const DISPLAY_NAME: Record<Provider, string> = {
   jira: "Jira",
   google: "Google",
   github: "GitHub",
+  github_repos: "GitHub",
 };
 
 export interface Env {
@@ -25,6 +26,10 @@ export interface Env {
   GOOGLE_CLIENT_SECRET: string;
   GITHUB_CLIENT_ID: string;
   GITHUB_CLIENT_SECRET: string;
+  // The read-only GitHub App used as a knowledge source (distinct from the sign-in OAuth app above).
+  GITHUB_APP_CLIENT_ID: string;
+  GITHUB_APP_CLIENT_SECRET: string;
+  GITHUB_APP_SLUG: string;
   RESULT_KEY: string;
 }
 
@@ -44,6 +49,17 @@ export type JiraResult = {
   site_url: string;
   site_name: string;
 };
+export type GithubReposResult = {
+  provider: "github_repos";
+  access_token: string;
+  refresh_token: string;
+  expires_in: number;
+  refresh_token_expires_in: number;
+  user_id: number;
+  login: string;
+  app_slug: string;
+  installations: Array<{ id: number; account_login: string; account_type: string }>;
+};
 export type IdentityResult = {
   provider: "google" | "github";
   provider_user_id: string;
@@ -51,7 +67,7 @@ export type IdentityResult = {
   name: string | null;
 };
 export type ErrorResult = { provider: Provider; error: string };
-export type Result = NotionResult | JiraResult | IdentityResult | ErrorResult;
+export type Result = NotionResult | JiraResult | GithubReposResult | IdentityResult | ErrorResult;
 
 const URLS = {
   notion: { authorize: "https://api.notion.com/v1/oauth/authorize", token: "https://api.notion.com/v1/oauth/token" },
@@ -70,6 +86,12 @@ const URLS = {
     token: "https://github.com/login/oauth/access_token",
     user: "https://api.github.com/user",
     emails: "https://api.github.com/user/emails",
+  },
+  github_repos: {
+    authorize: "https://github.com/login/oauth/authorize",
+    token: "https://github.com/login/oauth/access_token",
+    user: "https://api.github.com/user",
+    installations: "https://api.github.com/user/installations?per_page=100&page=1",
   },
 } as const;
 
@@ -115,6 +137,11 @@ export function authorizeUrl(provider: Provider, env: Env, state: string): strin
       base = URLS.github.authorize;
       params = { client_id: env.GITHUB_CLIENT_ID, scope: "read:user user:email", redirect_uri, state };
       break;
+    case "github_repos":
+      base = URLS.github_repos.authorize;
+      // No scope: a GitHub App's user token is limited by the app's own (read-only) permissions.
+      params = { client_id: env.GITHUB_APP_CLIENT_ID, redirect_uri, state };
+      break;
   }
   return `${base}?${new URLSearchParams(params)}`;
 }
@@ -135,6 +162,49 @@ function requireString(v: unknown, what: string): string {
 
 function optString(v: unknown): string | null {
   return typeof v === "string" && v.length > 0 ? v : null;
+}
+
+const MAX_INSTALLATION_PAGES = 50;
+
+/** The `rel="next"` URL of a Link header, or null. Anything not on https://api.github.com/ is refused. */
+function nextLink(link: string | null): string | null {
+  if (!link) return null;
+  for (const part of link.split(",")) {
+    const m = /^\s*<([^>]+)>\s*;\s*rel="?next"?\s*$/.exec(part);
+    if (!m) continue;
+    let u: URL;
+    try {
+      u = new URL(m[1]);
+    } catch {
+      throw new ProviderError("GitHub installations: bad next link");
+    }
+    if (u.origin !== "https://api.github.com") throw new ProviderError("GitHub installations: unexpected next link host");
+    return u.toString();
+  }
+  return null;
+}
+
+/** All of the user's app installations, following `Link: rel="next"` (only ever to api.github.com). */
+async function listInstallations(headers: Record<string, string>): Promise<GithubReposResult["installations"]> {
+  const out: GithubReposResult["installations"] = [];
+  let next: string | null = URLS.github_repos.installations;
+  for (let page = 0; next !== null; page++) {
+    if (page >= MAX_INSTALLATION_PAGES) throw new ProviderError("GitHub installations: too many pages");
+    const res: Response = await fetch(next, { headers });
+    const link = res.headers.get("link");
+    const j = await jsonOrThrow(res, "GitHub /user/installations");
+    if (!j || !Array.isArray(j.installations)) throw new ProviderError("GitHub installations missing");
+    for (const i of j.installations) {
+      if (!i || typeof i.id !== "number") throw new ProviderError("GitHub installation id missing");
+      out.push({
+        id: i.id,
+        account_login: requireString(i.account?.login, "GitHub installation account"),
+        account_type: optString(i.account?.type) ?? "User",
+      });
+    }
+    next = nextLink(link);
+  }
+  return out;
 }
 
 export async function exchange(provider: Provider, env: Env, code: string): Promise<Result> {
@@ -249,11 +319,53 @@ export async function exchange(provider: Provider, env: Env, code: string): Prom
         name: optString(u.name) ?? optString(u.login),
       };
     }
+    case "github_repos": {
+      const res = await fetch(URLS.github_repos.token, {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json", "user-agent": USER_AGENT },
+        body: JSON.stringify({
+          client_id: env.GITHUB_APP_CLIENT_ID,
+          client_secret: env.GITHUB_APP_CLIENT_SECRET,
+          code,
+          redirect_uri,
+        }),
+      });
+      let t: any = null;
+      try {
+        t = await res.json();
+      } catch {
+        /* handled below */
+      }
+      // GitHub reports a bad/expired code as HTTP 200 with an `error` field: any `error` is a failure.
+      if (!res.ok || !t || typeof t.error === "string") {
+        return { provider: "github_repos", error: `${DISPLAY_NAME.github_repos} access wasn't granted.` };
+      }
+      const token = requireString(t.access_token, "GitHub access_token");
+      const headers = {
+        authorization: `Bearer ${token}`,
+        accept: "application/vnd.github+json",
+        "user-agent": USER_AGENT,
+      };
+      const u = await jsonOrThrow(await fetch(URLS.github_repos.user, { headers }), "GitHub /user");
+      if (typeof u.id !== "number") throw new ProviderError("GitHub user id missing");
+      const installations = await listInstallations(headers);
+      return {
+        provider: "github_repos",
+        access_token: token,
+        refresh_token: requireString(t.refresh_token, "GitHub refresh_token"),
+        expires_in: typeof t.expires_in === "number" ? t.expires_in : 28800,
+        refresh_token_expires_in: typeof t.refresh_token_expires_in === "number" ? t.refresh_token_expires_in : 15811200,
+        user_id: u.id,
+        login: requireString(u.login, "GitHub login"),
+        app_slug: env.GITHUB_APP_SLUG,
+        installations,
+      };
+    }
   }
 }
 
 export type RefreshOutcome =
-  | { ok: true; access_token: string; refresh_token: string; expires_in: number }
+  | { ok: true; access_token: string; refresh_token: string; expires_in: number; refresh_token_expires_in?: number }
   | { ok: false; status: number; error: string };
 
 export async function refreshJira(env: Env, refresh_token: string): Promise<RefreshOutcome> {
@@ -295,4 +407,46 @@ export async function refreshJira(env: Env, refresh_token: string): Promise<Refr
     return { ok: false, status: 400, error: msg };
   }
   return { ok: false, status: 502, error: `Atlassian returned HTTP ${res.status}` };
+}
+
+export async function refreshGithubRepos(env: Env, refresh_token: string): Promise<RefreshOutcome> {
+  let res: Response;
+  try {
+    res = await fetch(URLS.github_repos.token, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json", "user-agent": USER_AGENT },
+      body: JSON.stringify({
+        grant_type: "refresh_token",
+        client_id: env.GITHUB_APP_CLIENT_ID,
+        client_secret: env.GITHUB_APP_CLIENT_SECRET,
+        refresh_token,
+      }),
+    });
+  } catch {
+    return { ok: false, status: 502, error: "Couldn't reach GitHub." };
+  }
+  let j: any = null;
+  try {
+    j = await res.json();
+  } catch {
+    /* fall through */
+  }
+  // GitHub answers failures with HTTP 200 + `error`, so an `error` field means failure whatever the status.
+  const err = j && typeof j.error === "string" ? j.error : null;
+  if (res.ok && err === null && j && typeof j.access_token === "string") {
+    return {
+      ok: true,
+      access_token: j.access_token,
+      // Refresh tokens rotate; keep the old one if a response ever omits it.
+      refresh_token: typeof j.refresh_token === "string" ? j.refresh_token : refresh_token,
+      expires_in: typeof j.expires_in === "number" ? j.expires_in : 28800,
+      refresh_token_expires_in: typeof j.refresh_token_expires_in === "number" ? j.refresh_token_expires_in : 15811200,
+    };
+  }
+  // A definite refusal of the refresh token (bad_refresh_token, or HTTP 401/403) is a 400: the app then asks the
+  // person to reconnect. Anything else (rate limit, outage, bad client credentials, a 200 without a token) is 502.
+  if (err === "bad_refresh_token" || res.status === 401 || res.status === 403) {
+    return { ok: false, status: 400, error: (j && optString(j.error_description)) || err || `GitHub returned HTTP ${res.status}` };
+  }
+  return { ok: false, status: 502, error: err ? "GitHub refused the refresh." : `GitHub returned HTTP ${res.status}` };
 }

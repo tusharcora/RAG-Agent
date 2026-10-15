@@ -536,6 +536,240 @@ describe("refresh", () => {
   });
 });
 
+// ---------- github_repos (GitHub App user-to-server) ----------
+
+function ghToken(reply: Record<string, unknown>, status = 200) {
+  fetchMock
+    .get("https://github.com")
+    .intercept({
+      path: "/login/oauth/access_token",
+      method: "POST",
+      headers: { accept: "application/json" },
+      body: (b) => {
+        const j = JSON.parse(b);
+        return (
+          j.client_id === "ghapp-id" &&
+          j.client_secret === "ghapp-secret" &&
+          j.code === "the-code" &&
+          j.redirect_uri === `${BROKER}/callback/github_repos`
+        );
+      },
+    })
+    .reply(status, reply);
+}
+
+const GH_TOKEN_OK = {
+  access_token: "ghu_access",
+  expires_in: 28800,
+  refresh_token: "ghr_refresh",
+  refresh_token_expires_in: 15811200,
+  token_type: "bearer",
+  scope: "",
+};
+
+function ghUser() {
+  fetchMock
+    .get("https://api.github.com")
+    .intercept({ path: "/user", headers: { authorization: "Bearer ghu_access", "user-agent": /.+/ } })
+    .reply(200, { id: 4242, login: "octo", name: "Octo", email: "private@example.com" });
+}
+
+function ghInstall(n: number, offset = 0) {
+  return Array.from({ length: n }, (_, i) => ({
+    id: offset + i + 1,
+    account: { login: `acct-${offset + i + 1}`, type: i % 2 ? "Organization" : "User" },
+    app_slug: "x",
+  }));
+}
+
+describe("github_repos", () => {
+  it("start github_repos redirects to OAuth authorize with state", async () => {
+    const { challenge } = await pkce();
+    const state = randomId(32);
+    const res = await start("github_repos", { state, challenge, port: PORT });
+    expect(res.status).toBe(302);
+    const loc = new URL(res.headers.get("location")!);
+    expect(loc.host).toBe("github.com");
+    expect(loc.pathname).toBe("/login/oauth/authorize");
+    expect(loc.searchParams.get("client_id")).toBe("ghapp-id");
+    expect(loc.searchParams.get("redirect_uri")).toBe(`${BROKER}/callback/github_repos`);
+    expect(loc.searchParams.get("redirect_uri")!.endsWith("/callback/github_repos")).toBe(true);
+    expect(loc.searchParams.get("state")).toBe(state);
+    expect(loc.toString()).not.toContain("secret");
+  });
+
+  it("callback github_repos returns token, login and all installation pages", async () => {
+    ghToken(GH_TOKEN_OK);
+    ghUser();
+    fetchMock
+      .get("https://api.github.com")
+      .intercept({ path: "/user/installations?per_page=100&page=1", headers: { authorization: "Bearer ghu_access" } })
+      .reply(200, { total_count: 101, installations: ghInstall(100) }, {
+        headers: { link: '<https://api.github.com/user/installations?per_page=100&page=2>; rel="next", <https://api.github.com/user/installations?per_page=100&page=2>; rel="last"' },
+      });
+    fetchMock
+      .get("https://api.github.com")
+      .intercept({ path: "/user/installations?per_page=100&page=2", headers: { authorization: "Bearer ghu_access" } })
+      .reply(200, { total_count: 101, installations: ghInstall(1, 100) });
+    const { state, verifier, pickup, callbackResponse } = await signIn("github_repos");
+    expect(callbackResponse.status).toBe(302);
+    const res = await redeem(state, verifier, pickup);
+    expect(res.status).toBe(200);
+    const j = (await res.json()) as any;
+    expect(j.installations.length).toBe(101);
+    expect(j.installations[0]).toEqual({ id: 1, account_login: "acct-1", account_type: "User" });
+    expect(j.installations[1].account_type).toBe("Organization");
+    expect(j.installations[100]).toEqual({ id: 101, account_login: "acct-101", account_type: "User" });
+    delete j.installations;
+    expect(j).toEqual({
+      provider: "github_repos",
+      access_token: "ghu_access",
+      refresh_token: "ghr_refresh",
+      expires_in: 28800,
+      refresh_token_expires_in: 15811200,
+      user_id: 4242,
+      login: "octo",
+      app_slug: "knowledge-agent-test",
+    });
+  });
+
+  it("callback github_repos treats 200 with error as denied", async () => {
+    ghToken({ error: "bad_verification_code", error_description: "The code passed is incorrect or expired." });
+    const { state, verifier, pickup } = await signIn("github_repos");
+    const res = await redeem(state, verifier, pickup);
+    expect(await res.json()).toEqual({ provider: "github_repos", error: "GitHub access wasn't granted." });
+  });
+
+  it("callback github_repos with ?error=access_denied is denied", async () => {
+    const { state, verifier, pickup } = await signIn("github_repos", { error: "access_denied" });
+    const res = await redeem(state, verifier, pickup);
+    expect(await res.json()).toEqual({ provider: "github_repos", error: "GitHub access wasn't granted." });
+  });
+
+  it("callback github_repos with zero installations", async () => {
+    ghToken(GH_TOKEN_OK);
+    ghUser();
+    fetchMock
+      .get("https://api.github.com")
+      .intercept({ path: "/user/installations?per_page=100&page=1" })
+      .reply(200, { total_count: 0, installations: [] });
+    const { state, verifier, pickup } = await signIn("github_repos");
+    const j = (await (await redeem(state, verifier, pickup)).json()) as any;
+    expect(j.error).toBeUndefined();
+    expect(j.installations).toEqual([]);
+    expect(j.login).toBe("octo");
+  });
+
+  it("callback github_repos does not follow a next link to another host", async () => {
+    ghToken(GH_TOKEN_OK);
+    ghUser();
+    fetchMock
+      .get("https://api.github.com")
+      .intercept({ path: "/user/installations?per_page=100&page=1" })
+      .reply(200, { installations: ghInstall(1) }, { headers: { link: '<https://evil.example/steal>; rel="next"' } });
+    const { state, verifier, pickup } = await signIn("github_repos");
+    const j = (await (await redeem(state, verifier, pickup)).json()) as any;
+    expect(j.error).toMatch(/GitHub/);
+  });
+
+  it("callback github_repos result is encrypted in KV", async () => {
+    ghToken(GH_TOKEN_OK);
+    ghUser();
+    fetchMock
+      .get("https://api.github.com")
+      .intercept({ path: "/user/installations?per_page=100&page=1" })
+      .reply(200, { installations: [] });
+    const { state } = await signIn("github_repos");
+    const raw = await env.PENDING.get(`result:${state}`);
+    expect(raw).not.toContain("ghu_access");
+    expect(raw).not.toContain("ghr_refresh");
+  });
+});
+
+describe("refresh github_repos", () => {
+  function refresh(rt = "old-rt") {
+    return SELF.fetch(`${BROKER}/refresh/github_repos`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ refresh_token: rt }),
+    });
+  }
+  function ghRefreshReply(status: number, body: unknown) {
+    fetchMock
+      .get("https://github.com")
+      .intercept({
+        path: "/login/oauth/access_token",
+        method: "POST",
+        headers: { accept: "application/json" },
+        body: (b) => {
+          const j = JSON.parse(b);
+          return (
+            j.grant_type === "refresh_token" &&
+            j.client_id === "ghapp-id" &&
+            j.client_secret === "ghapp-secret" &&
+            j.refresh_token === "old-rt"
+          );
+        },
+      })
+      .reply(status, body as any);
+  }
+
+  it("success passes the four fields through", async () => {
+    ghRefreshReply(200, {
+      access_token: "ghu_new",
+      refresh_token: "ghr_new",
+      expires_in: 28800,
+      refresh_token_expires_in: 15811200,
+      token_type: "bearer",
+    });
+    const res = await refresh();
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      access_token: "ghu_new",
+      refresh_token: "ghr_new",
+      expires_in: 28800,
+      refresh_token_expires_in: 15811200,
+    });
+  });
+
+  it("maps bad_refresh_token (200 body) to 400", async () => {
+    ghRefreshReply(200, { error: "bad_refresh_token", error_description: "The refresh token passed is incorrect or expired." });
+    const res = await refresh();
+    expect(res.status).toBe(400);
+    expect(typeof ((await res.json()) as any).error).toBe("string");
+  });
+
+  it("maps bad_refresh_token with 4xx and 401/403 to 400", async () => {
+    ghRefreshReply(400, { error: "bad_refresh_token" });
+    expect((await refresh()).status).toBe(400);
+    ghRefreshReply(401, { message: "Bad credentials" });
+    expect((await refresh()).status).toBe(400);
+    ghRefreshReply(403, "forbidden");
+    expect((await refresh()).status).toBe(400);
+  });
+
+  it("maps other errors and statuses to 502", async () => {
+    ghRefreshReply(500, "oops");
+    expect((await refresh()).status).toBe(502);
+    ghRefreshReply(200, { error: "incorrect_client_credentials" });
+    expect((await refresh()).status).toBe(502);
+    ghRefreshReply(200, { no_token: true });
+    expect((await refresh()).status).toBe(502);
+    ghRefreshReply(429, { error: "rate_limited" });
+    expect((await refresh()).status).toBe(502);
+  });
+
+  it("maps a network error to 502", async () => {
+    fetchMock.get("https://github.com").intercept({ path: "/login/oauth/access_token", method: "POST" }).replyWithError(new Error("down"));
+    expect((await refresh()).status).toBe(502);
+  });
+
+  it("rejects a missing refresh_token with 400", async () => {
+    const res = await SELF.fetch(`${BROKER}/refresh/github_repos`, { method: "POST", body: "{}" });
+    expect(res.status).toBe(400);
+  });
+});
+
 // ---------- misc ----------
 
 describe("misc", () => {

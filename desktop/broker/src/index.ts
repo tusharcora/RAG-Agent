@@ -22,6 +22,7 @@ import {
   brokerBase,
   exchange,
   isProvider,
+  refreshGithubRepos,
   refreshJira,
 } from "./providers";
 
@@ -225,6 +226,22 @@ async function handleRefreshJira(request: Request, env: Env): Promise<Response> 
   return json({ access_token: out.access_token, refresh_token: out.refresh_token, expires_in: out.expires_in });
 }
 
+async function handleRefreshGithubRepos(request: Request, env: Env): Promise<Response> {
+  const body = await readJson(request);
+  const rt = body?.refresh_token;
+  if (typeof rt !== "string" || rt.length === 0 || rt.length > 4096) {
+    return json({ error: "Expected JSON {refresh_token}." }, 400);
+  }
+  const out = await refreshGithubRepos(env, rt);
+  if (!out.ok) return json({ error: out.error }, out.status);
+  return json({
+    access_token: out.access_token,
+    refresh_token: out.refresh_token,
+    expires_in: out.expires_in,
+    refresh_token_expires_in: out.refresh_token_expires_in,
+  });
+}
+
 // ---------- router ----------
 
 export default {
@@ -247,6 +264,9 @@ export default {
     }
     if (parts.length === 2 && parts[0] === "refresh" && parts[1] === "jira") {
       return method === "POST" ? handleRefreshJira(request, env) : text("method not allowed", 405);
+    }
+    if (parts.length === 2 && parts[0] === "refresh" && parts[1] === "github_repos") {
+      return method === "POST" ? handleRefreshGithubRepos(request, env) : text("method not allowed", 405);
     }
     return text("not found", 404);
   },

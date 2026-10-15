@@ -12,7 +12,10 @@ id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
 [vars]
 # Public base URL of this Worker, no trailing slash, e.g. https://knowledge-agent-auth.<you>.workers.dev
 BROKER_URL = ""
+# URL slug of the read-only GitHub App used as a knowledge source (github.com/apps/<slug>); see README.md.
+GITHUB_APP_SLUG = ""
 
 # Secrets (set with `npx wrangler secret put <NAME>`, never committed):
 #   NOTION_CLIENT_ID NOTION_CLIENT_SECRET JIRA_CLIENT_ID JIRA_CLIENT_SECRET
 #   GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET GITHUB_CLIENT_ID GITHUB_CLIENT_SECRET RESULT_KEY
+#   GITHUB_APP_CLIENT_ID GITHUB_APP_CLIENT_SECRET   (the knowledge-source GitHub App, not the sign-in OAuth app)

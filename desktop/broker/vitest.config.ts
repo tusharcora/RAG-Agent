@@ -19,6 +19,9 @@ export default defineWorkersConfig({
             GOOGLE_CLIENT_SECRET: "google-secret",
             GITHUB_CLIENT_ID: "github-id",
             GITHUB_CLIENT_SECRET: "github-secret",
+            GITHUB_APP_CLIENT_ID: "ghapp-id",
+            GITHUB_APP_CLIENT_SECRET: "ghapp-secret",
+            GITHUB_APP_SLUG: "knowledge-agent-test",
             // base64("test-key-test-key-test-key-00000"), 32 bytes
             RESULT_KEY: "dGVzdC1rZXktdGVzdC1rZXktdGVzdC1rZXktMDAwMDA=",
           },
