@@ -1,6 +1,6 @@
 import { API_BASE, ApiError } from "./api";
 
-export type ConnectPurpose = "notion" | "jira" | "google" | "github";
+export type ConnectPurpose = "notion" | "jira" | "github_repos" | "google" | "github";
 
 export interface LinkedIdentity {
   provider: string;

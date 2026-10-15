@@ -14,10 +14,12 @@ import { PageHeader } from "@/components/PageHeader";
 import { ConnectionCardSkeleton } from "@/components/base/skeleton/skeleton";
 import type { ConnectionStatus, DlqEvent, DocumentSummary, EventLogEntry, VoyageUsage } from "@/lib/types";
 
-const ROUTING_KEYS: Record<string, string> = {
-  notion: "rag.notion_page_updated",
-  jira: "rag.jira_issue_updated",
+const ROUTING_KEYS: Record<string, string[]> = {
+  notion: ["rag.notion_page_updated"],
+  jira: ["rag.jira_issue_updated"],
+  github: ["rag.github_file_updated", "rag.github_issue_updated", "rag.github_pr_updated"],
 };
+const isProviderEvent = (provider: string, routingKey: string) => !!ROUTING_KEYS[provider]?.includes(routingKey);
 
 export default function ConnectionsPage() {
   return (
@@ -105,13 +107,13 @@ function ConnectionsPageContent() {
 
   // Newest sync event's error for this provider, when it failed (events arrive newest first).
   const lastErrorFor = (provider: string) => {
-    const latest = events.find((e) => e.routing_key === ROUTING_KEYS[provider]);
+    const latest = events.find((e) => isProviderEvent(provider, e.routing_key));
     return latest && (latest.status === "failed" || latest.status === "dead_lettered") && latest.error ? latest.error : undefined;
   };
 
   const runsFor = (provider: string) =>
     events
-      .filter((e) => e.routing_key === ROUTING_KEYS[provider])
+      .filter((e) => isProviderEvent(provider, e.routing_key))
       .slice(0, 24)
       .reverse()
       .map((e) => e.status);
@@ -121,7 +123,7 @@ function ConnectionsPageContent() {
       <PageHeader
         eyebrow="DATA SOURCES"
         title="Connections"
-        description="Connect Notion and Jira, then sync content for retrieval."
+        description="Connect Notion, Jira and GitHub, then sync content for retrieval."
       />
 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-[repeat(auto-fit,minmax(340px,1fr))]">

@@ -1,4 +1,5 @@
 import uuid
+from urllib.parse import quote
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -18,11 +19,18 @@ from app.integrations.connections import save_notion_connection
 from app.integrations.github_state import reset_github_state
 from app.integrations.jira_auth import ensure_fresh_token
 from app.models.event_log import EventLog
-from app.models.rag import ConnectionMember, Document, OAuthConnection
+from app.models.rag import ConnectionMember, Document, GithubRepo, OAuthConnection
 
 router = APIRouter(dependencies=[Depends(require_auth)])
 
 PROVIDERS = ("notion", "jira", "github")
+
+
+class GithubInfo(BaseModel):
+    repo_count: int
+    repo_names: list[str]
+    # Where the person chooses which repositories the app can see; "" when the app slug is unknown.
+    choose_url: str
 
 
 class ConnectionStatus(BaseModel):
@@ -42,6 +50,7 @@ class ConnectionStatus(BaseModel):
     # document_count says how many documents were kept (still searchable, never updated).
     disconnected: bool = False
     document_count: int = 0
+    github: GithubInfo | None = None  # only on a connected GitHub row
 
 
 @router.get("")
@@ -103,11 +112,30 @@ async def connections(
 
         dead_lettered_count_24h, last_sync_status = await _sync_health(session, auth.org_id, conn.id)
 
+        github = None
+        if provider == "github":
+            names = (
+                (
+                    await session.execute(
+                        select(GithubRepo.full_name).where(GithubRepo.connection_id == conn.id).order_by(GithubRepo.full_name)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            slug = conn.bot_id or ""
+            github = GithubInfo(
+                repo_count=len(names),
+                repo_names=list(names),
+                choose_url=f"https://github.com/apps/{quote(slug, safe='')}/installations/new" if slug else "",
+            )
+
         out.append(
             ConnectionStatus(
                 id=str(conn.id),
                 provider=provider,
                 connected=True,
+                github=github,
                 workspace_name=conn.workspace_name,
                 site_url=conn.site_url,
                 last_synced_at=last_synced_at,

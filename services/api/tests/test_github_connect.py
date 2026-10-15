@@ -323,3 +323,48 @@ def test_github_source_routes_404_without_config(web, monkeypatch):
     assert web.get("/oauth/github_source/authorize", follow_redirects=False).status_code == 404
     r = web.get("/oauth/github_source/callback", params={"code": "c", "state": "st"}, follow_redirects=False)
     assert r.status_code == 404
+
+
+# --- GET /connections github block ------------------------------------------
+
+
+def test_connections_reports_github_repos(make_client, pg_dsn):
+    from app.api.routes import connections as connections_routes
+
+    client = make_client(db=True, routers=[(connections_routes.router, "/connections")])
+
+    def github():
+        (s,) = [c for c in client.get("/connections").json() if c["provider"] == "github"]
+        return s
+
+    assert github()["github"] is None  # not connected
+
+    conn_id = uuid.uuid4()
+    db_run(
+        pg_dsn,
+        "INSERT INTO oauth_connections (id, org_id, provider, workspace_id, workspace_name, bot_id, access_token)"
+        " VALUES ($1, $2, 'github', '42', 'octo', 'ka app/x', 'x')",
+        conn_id,
+        client.org_id,
+    )
+    assert github()["github"] == {
+        "repo_count": 0,
+        "repo_names": [],
+        "choose_url": "https://github.com/apps/ka%20app%2Fx/installations/new",
+    }
+    for i, name in ((2, "octo/b"), (1, "octo/a")):
+        db_run(
+            pg_dsn,
+            "INSERT INTO github_repos (connection_id, installation_id, repo_id, full_name, html_url, default_branch)"
+            " VALUES ($1, 11, $2, $3, 'https://github.com/x', 'main')",
+            conn_id,
+            i,
+            name,
+        )
+    g = github()["github"]
+    assert g["repo_count"] == 2 and g["repo_names"] == ["octo/a", "octo/b"]
+
+    db_run(pg_dsn, "UPDATE oauth_connections SET bot_id = NULL WHERE id = $1", conn_id)
+    assert github()["github"]["choose_url"] == ""
+    others = [c for c in client.get("/connections").json() if c["provider"] != "github"]
+    assert all(c["github"] is None for c in others)

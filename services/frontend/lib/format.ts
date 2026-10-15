@@ -23,6 +23,7 @@ export function greetingWord(): string {
 export function providerLabel(source: string): string {
   if (source === "notion") return "Notion";
   if (source === "jira") return "Jira";
+  if (source === "github") return "GitHub";
   return source.charAt(0).toUpperCase() + source.slice(1);
 }
 

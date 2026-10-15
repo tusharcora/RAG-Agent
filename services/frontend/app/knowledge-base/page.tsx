@@ -21,6 +21,7 @@ const SOURCE_OPTIONS = [
   { label: "All sources", value: "" },
   { label: "Notion", value: "notion" },
   { label: "Jira", value: "jira" },
+  { label: "GitHub", value: "github" },
 ];
 
 export default function KnowledgeBasePage() {

@@ -1,5 +1,6 @@
 import type { Selection } from "react-aria-components";
 import { FileSearch02 } from "@untitledui/icons";
+import { providerLabel } from "@/lib/format";
 import { SourceIcon } from "@/components/icons/SourceIcon";
 import { Table } from "@/components/application/table/table";
 import { Badge } from "@/components/base/badges/badges";
@@ -72,7 +73,7 @@ export function DocumentTable({
             <Table.Cell>
               <span className="flex items-center gap-1.5 whitespace-nowrap">
                 <SourceIcon source={doc.source} className="h-3.5 w-3.5" />
-                {doc.source}
+                {providerLabel(doc.source)}
               </span>
             </Table.Cell>
             <Table.Cell className="whitespace-nowrap">{new Date(doc.synced_at).toLocaleString()}</Table.Cell>

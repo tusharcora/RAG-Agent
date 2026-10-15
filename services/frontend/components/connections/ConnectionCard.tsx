@@ -28,9 +28,18 @@ import { Modal } from "@/components/base/modal/modal";
 import { ConfirmDialog } from "@/components/base/modal/confirm-dialog";
 import { RadioButton, RadioGroup } from "@/components/base/radio-buttons/radio-buttons";
 
-const LABELS: Record<string, string> = { notion: "Notion", jira: "Jira" };
+const LABELS: Record<string, string> = { notion: "Notion", jira: "Jira", github: "GitHub" };
 // The api's refusal text when the sign-in service rejects Jira's refresh token (app/integrations/jira_auth.py).
 const JIRA_RECONNECT = "Jira needs reconnecting";
+// Both Jira's and GitHub's refusal texts contain this ("GitHub needs reconnecting. Use Reconnect on the Connections page.").
+const NEEDS_RECONNECT = " needs reconnecting";
+// The desktop connect flow's name for the GitHub repositories source (plain "github" there is sign-in).
+const connectPurpose = (provider: string): ConnectPurpose => (provider === "github" ? "github_repos" : (provider as ConnectPurpose));
+const syncProviderFor = (purpose: string) => (purpose === "github_repos" ? "github" : purpose);
+
+function repositoriesLabel(n: number): string {
+  return `${n.toLocaleString()} ${n === 1 ? "repository" : "repositories"}`;
+}
 
 function documentsLabel(n: number): string {
   return `${n.toLocaleString()} document${n === 1 ? "" : "s"}`;
@@ -40,7 +49,7 @@ function documentsLabel(n: number): string {
 function syncStartFailed(err: unknown, fallback: string): boolean {
   const detail = err instanceof ApiError ? err.detail : undefined;
   toast.error("Sync failed to start", detail ?? fallback);
-  return !!detail && detail.includes(JIRA_RECONNECT);
+  return !!detail && detail.includes(NEEDS_RECONNECT);
 }
 
 export function ConnectionCard({
@@ -71,15 +80,15 @@ export function ConnectionCard({
   const [preview, setPreview] = useState<ConnectionPreview | null>(null);
   const { user, account } = useAuth();
   const isAdmin = user?.role === "owner" || user?.role === "admin";
-  const oneClick = IS_DESKTOP && !!account?.broker_configured && (status.provider === "notion" || status.provider === "jira");
+  const oneClick = IS_DESKTOP && !!account?.broker_configured && (status.provider === "notion" || status.provider === "jira" || status.provider === "github");
   const [showSecretForm, setShowSecretForm] = useState(false);
   // Set when Sync now was refused because Jira needs reconnecting (no sync event exists to show it).
   const [refused, setRefused] = useState(false);
   const { flow, start, cancel, starting } = useConnectFlow({
     // Connecting only saves the token: start the first sync, then show the "Syncing…" badge.
     onDone: (purpose) => {
-      if (purpose === "jira") setRefused(false);
-      syncProvider(purpose)
+      if (purpose === "jira" || purpose === "github_repos") setRefused(false);
+      syncProvider(syncProviderFor(purpose))
         .then(() => onSynced())
         .catch((err) => setRefused(syncStartFailed(err, "Press Sync now to try again.")));
     },
@@ -132,14 +141,15 @@ export function ConnectionCard({
   // primitive, so this effect only re-runs when the connection itself
   // changes, not on every poll re-render.
   useEffect(() => {
-    if (!status.connected || !status.id) {
+    // The preview asks Notion/Jira what the integration can see; GitHub shows its repository list instead.
+    if (!status.connected || !status.id || status.provider === "github") {
       setPreview(null);
       return;
     }
     getConnectionPreview(status.id)
       .then(setPreview)
       .catch(() => setPreview(null));
-  }, [status.connected, status.id]);
+  }, [status.connected, status.id, status.provider]);
 
   const handleSync = async () => {
     setSyncing(true);
@@ -165,8 +175,12 @@ export function ConnectionCard({
   // Task 3 marks a dead Jira refresh token with "Jira needs reconnecting…". If the error text isn't
   // known to the card, any failed/dead-lettered Jira sync offers Reconnect.
   // A refusal before any event was published (Sync now, auto-sync) comes from status.needs_reconnect or `refused`.
+  const isGithub = status.provider === "github";
+  const github = isGithub && status.connected ? status.github : null;
   const needsReconnect =
-    status.provider === "jira" &&
+    isGithub
+      ? status.connected && (refused || !!status.needs_reconnect)
+      : status.provider === "jira" &&
     status.connected &&
     (refused ||
       !!status.needs_reconnect ||
@@ -208,8 +222,12 @@ export function ConnectionCard({
       {status.connected ? (
         <>
           <div className="grid grid-cols-3 gap-4">
-            <BigStat value={docCount === undefined ? "—" : docCount.toLocaleString()} label={status.provider === "jira" ? "issues" : "pages"} />
-            <BigStat value={preview ? `${preview.visible_count}${preview.truncated ? "+" : ""}` : "—"} label="visible to integration" />
+            <BigStat value={docCount === undefined ? "—" : docCount.toLocaleString()} label={isGithub ? "documents" : status.provider === "jira" ? "issues" : "pages"} />
+            {isGithub ? (
+              <BigStat value={github ? github.repo_count.toLocaleString() : "—"} label="repositories" />
+            ) : (
+              <BigStat value={preview ? `${preview.visible_count}${preview.truncated ? "+" : ""}` : "—"} label="visible to integration" />
+            )}
             <BigStat value={shortAgo(status.last_synced_at)} label="since last sync" highlighted={justUpdated} />
           </div>
 
@@ -240,11 +258,34 @@ export function ConnectionCard({
 
           <div className="space-y-1.5 border-t border-ink-800 pt-4 text-sm">
             <Row label="Last synced" value={formatTimestamp(status.last_synced_at)} highlighted={justUpdated} />
+            {github && (
+              <Row
+                label="Repositories"
+                value={repositoriesLabel(github.repo_count)}
+                title={github.repo_names.join("\n") || undefined}
+              />
+            )}
             <Row label="Visibility" value={status.visibility_mode === "restricted" ? "Restricted" : "Org-wide"} />
             {preview && preview.visible_count === 0 && (
               <Row label="Permissions" value="0 pages shared — check the integration's access" />
             )}
           </div>
+          {github && github.repo_count === 0 && (
+            <div className="flex flex-col gap-1 rounded-xl border border-ink-800 p-3">
+              <p className="text-[15px] font-medium text-ink-100">No repositories yet</p>
+              <p className="text-[13px] text-ink-400">After choosing them on GitHub, come back here and press Sync now.</p>
+              {github.choose_url && (
+                <a
+                  href={github.choose_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="w-fit text-[13px] font-semibold text-ink-200 underline underline-offset-2 hover:text-ink-100"
+                >
+                  Choose repositories on GitHub
+                </a>
+              )}
+            </div>
+          )}
         </>
       ) : kept ? (
         <div className="flex flex-col gap-1">
@@ -258,7 +299,9 @@ export function ConnectionCard({
           {oneClick
             ? status.provider === "notion"
               ? "Sign in to Notion and pick the pages you want to search. Only the pages you choose are synced."
-              : "Sign in to Atlassian and choose your Jira site. Issues you can see are synced."
+              : status.provider === "github"
+                ? "Sign in to GitHub and choose your repositories. Their Markdown files, issues and pull requests are synced."
+                : "Sign in to Atlassian and choose your Jira site. Issues you can see are synced."
             : "Connect to start syncing content for retrieval."}
         </p>
       )}
@@ -301,8 +344,8 @@ export function ConnectionCard({
               Sync now
             </Button>
             {needsReconnect && oneClick && isAdmin && (
-              <Button color="primary" size="sm" isDisabled={starting} onPress={() => start("jira")}>
-                Reconnect Jira
+              <Button color="primary" size="sm" isDisabled={starting} onPress={() => start(connectPurpose(status.provider))}>
+                Reconnect {LABELS[status.provider]}
               </Button>
             )}
             {status.provider === "notion" && oneClick && isAdmin && (
@@ -326,6 +369,16 @@ export function ConnectionCard({
                 Choose pages in Notion
               </Button>
             )}
+            {needsReconnect && isGithub && !IS_DESKTOP && isAdmin && (
+              <Button color="primary" size="sm" href={`${API_BASE}/oauth/github_source/authorize`}>
+                Reconnect GitHub
+              </Button>
+            )}
+            {github?.choose_url && (
+              <Button color="tertiary" size="sm" href={github.choose_url} target="_blank" rel="noopener noreferrer">
+                Choose repositories on GitHub
+              </Button>
+            )}
             {isAdmin && status.id && (
               <Button color="tertiary" size="sm" onPress={() => setDisconnectOpen(true)}>
                 Disconnect
@@ -339,7 +392,7 @@ export function ConnectionCard({
           </>
         ) : oneClick ? (
           <>
-            <Button color="primary" size="sm" isDisabled={starting} onPress={() => start(status.provider as ConnectPurpose)}>
+            <Button color="primary" size="sm" isDisabled={starting} onPress={() => start(connectPurpose(status.provider))}>
               {kept ? "Connect again" : `Connect ${LABELS[status.provider]}`}
             </Button>
             {status.provider === "notion" && (
@@ -349,10 +402,10 @@ export function ConnectionCard({
             )}
           </>
         ) : IS_DESKTOP && status.provider === "notion" ? null : IS_DESKTOP ? (
-          <p className="text-xs text-ink-500">Jira isn&apos;t available in the desktop app yet.</p>
+          <p className="text-xs text-ink-500">{LABELS[status.provider] ?? status.provider} isn&apos;t available in the desktop app yet.</p>
         ) : (
-          <Button color="primary" size="sm" href={`${API_BASE}/oauth/${status.provider}/authorize`}>
-            {kept ? "Connect again" : "Connect"}
+          <Button color="primary" size="sm" href={`${API_BASE}/oauth/${isGithub ? "github_source" : status.provider}/authorize`}>
+            {kept ? "Connect again" : isGithub ? "Connect GitHub" : "Connect"}
           </Button>
         )}
         {kept && isAdmin && !status.connected && (
@@ -366,7 +419,7 @@ export function ConnectionCard({
       {flow.phase === "error" && <p className="text-xs text-error-primary">{flow.message}</p>}
       {flow.phase === "error" && (
         <div>
-          <Button color="secondary" size="sm" isDisabled={starting} onPress={() => start(status.provider as ConnectPurpose)}>
+          <Button color="secondary" size="sm" isDisabled={starting} onPress={() => start(connectPurpose(status.provider))}>
             Try again
           </Button>
         </div>
@@ -392,6 +445,7 @@ export function ConnectionCard({
           connectionId={status.id}
           provider={status.provider}
           documentCount={status.document_count}
+          chooseUrl={github?.choose_url}
           onDone={() => onChanged?.()}
         />
       )}
@@ -416,6 +470,7 @@ function DisconnectDialog({
   connectionId,
   provider,
   documentCount,
+  chooseUrl,
   onDone,
 }: {
   isOpen: boolean;
@@ -423,6 +478,8 @@ function DisconnectDialog({
   connectionId: string;
   provider: string;
   documentCount: number;
+  // GitHub only: the page where the app can be uninstalled (same link as "Choose repositories").
+  chooseUrl?: string;
   onDone: () => void;
 }) {
   const [choice, setChoice] = useState<"remove" | "keep">("remove");
@@ -455,6 +512,15 @@ function DisconnectDialog({
     <Modal isOpen={isOpen} onOpenChange={onOpenChange} className="w-96" aria-label={title}>
       <p className="text-sm font-semibold text-ink-100">{title}</p>
       <p className="mt-1.5 text-sm text-ink-400">Its sign-in is removed and it stops syncing.</p>
+      {provider === "github" && chooseUrl && (
+        <p className="mt-1.5 text-sm text-ink-400">
+          You can also{" "}
+          <a href={chooseUrl} target="_blank" rel="noopener noreferrer" className="text-ink-200 underline underline-offset-2">
+            uninstall the app on GitHub
+          </a>
+          .
+        </p>
+      )}
       <RadioGroup
         aria-label="What happens to its documents"
         value={choice}
@@ -691,11 +757,12 @@ function AccessControl({ connectionId, status }: { connectionId: string; status:
   );
 }
 
-function Row({ label, value, highlighted }: { label: string; value: string; highlighted?: boolean }) {
+function Row({ label, value, highlighted, title }: { label: string; value: string; highlighted?: boolean; title?: string }) {
   return (
     <div className="flex justify-between gap-4">
       <span className="text-ink-500">{label}</span>
       <span
+        title={title}
         className={`-mx-1 truncate rounded px-1 transition-colors duration-1000 ${
           highlighted ? "bg-accent text-accent-ink" : "text-ink-300"
         }`}

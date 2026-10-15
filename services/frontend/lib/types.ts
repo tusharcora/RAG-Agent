@@ -2,7 +2,7 @@ export interface Source {
   index: number;
   title: string;
   url: string;
-  source: string; // "notion" | "jira"
+  source: string; // "notion" | "jira" | "github"
   snippet: string;
 }
 
@@ -56,6 +56,8 @@ export interface ConnectionStatus {
   // Disconnected by an owner/admin: connected is false, id remains, document_count = documents kept.
   disconnected: boolean;
   document_count: number;
+  // Only on a connected GitHub row: the repositories the app can see and where to choose them ("" = unknown).
+  github?: { repo_count: number; repo_names: string[]; choose_url: string } | null;
 }
 
 export interface MeResponse {
