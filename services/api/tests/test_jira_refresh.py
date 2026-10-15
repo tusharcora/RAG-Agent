@@ -101,3 +101,26 @@ async def test_desktop_refresh_unreachable_is_502(setup):
     with pytest.raises(HTTPException) as exc:
         await jira_auth.ensure_fresh_token(FakeSession(), expired_connection())
     assert exc.value.status_code == 502 and exc.value.detail == broker.UNREACHABLE
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [401, 403, 404, 429, 500, 503])
+async def test_desktop_refresh_non_400_is_transient(setup, status):
+    # Only the Worker's 400 means "Atlassian refused the token"; nothing else may say Reconnect.
+    install, _ = setup
+    install(lambda r: httpx.Response(status, json={"error": "x"}), "desktop")
+    with pytest.raises(HTTPException) as exc:
+        await jira_auth.ensure_fresh_token(FakeSession(), expired_connection())
+    assert exc.value.status_code == 502 and exc.value.detail == broker.UNREACHABLE
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [404, 429, 503])
+async def test_broker_refresh_status_mapping(setup, status):
+    install, _ = setup
+    install(lambda r: httpx.Response(status, json={"error": "x"}), "desktop")
+    with pytest.raises(broker.BrokerUnavailable):
+        await broker.refresh_jira("rt")
+    install(lambda r: httpx.Response(400, json={"error": "revoked"}), "desktop")
+    with pytest.raises(broker.BrokerRefused):
+        await broker.refresh_jira("rt")

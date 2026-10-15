@@ -493,6 +493,47 @@ describe("refresh", () => {
     const missing = await SELF.fetch(`${BROKER}/refresh/jira`, { method: "POST", body: "{}" });
     expect(missing.status).toBe(400);
   });
+
+  it("refresh_jira_refusals_are_400", async () => {
+    for (const status of [401, 403]) {
+      fetchMock
+        .get("https://auth.atlassian.com")
+        .intercept({ path: "/oauth/token", method: "POST" })
+        .reply(status, { error: "unauthorized_client" });
+      const res = await SELF.fetch(`${BROKER}/refresh/jira`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ refresh_token: "revoked-rt" }),
+      });
+      expect(res.status, String(status)).toBe(400);
+    }
+  });
+
+  it("refresh_jira_transient_failures_are_502", async () => {
+    const cases: Array<[number, unknown]> = [
+      [429, { error: "rate_limited" }],
+      [500, "oops"],
+      [503, { error: "unavailable" }],
+      [404, { error: "not_found" }],
+      [200, { no_token: true }],
+    ];
+    for (const [status, body] of cases) {
+      fetchMock.get("https://auth.atlassian.com").intercept({ path: "/oauth/token", method: "POST" }).reply(status, body as any);
+      const res = await SELF.fetch(`${BROKER}/refresh/jira`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ refresh_token: "some-rt" }),
+      });
+      expect(res.status, String(status)).toBe(502);
+    }
+    fetchMock.get("https://auth.atlassian.com").intercept({ path: "/oauth/token", method: "POST" }).replyWithError(new Error("down"));
+    const down = await SELF.fetch(`${BROKER}/refresh/jira`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ refresh_token: "some-rt" }),
+    });
+    expect(down.status).toBe(502);
+  });
 });
 
 // ---------- misc ----------

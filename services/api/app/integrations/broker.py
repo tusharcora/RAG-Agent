@@ -100,7 +100,9 @@ async def refresh_jira(refresh_token: str) -> dict:
         raise BrokerUnavailable() from exc
     if resp.status_code == 200:
         return _json(resp)
-    if resp.status_code >= 500:
+    # Only a 400 means Atlassian refused the refresh token (reconnect needed). Anything else — 404 (an old or
+    # misconfigured Worker), 429, 5xx — is transient and must not tell the person to reconnect.
+    if resp.status_code != 400:
         raise BrokerUnavailable()
     try:
         message = resp.json().get("error")

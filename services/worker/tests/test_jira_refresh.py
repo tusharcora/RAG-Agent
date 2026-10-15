@@ -103,3 +103,13 @@ async def test_desktop_refresh_unavailable_propagates(setup):
     install(lambda r: httpx.Response(502, json={"error": "x"}), "desktop")
     with pytest.raises(broker.BrokerUnavailable):
         await jira._ensure_fresh_token(expired_connection())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [401, 403, 404, 429, 500, 503])
+async def test_desktop_refresh_non_400_is_transient(setup, status):
+    # Only the Worker's 400 means "Atlassian refused the token"; nothing else may say Reconnect.
+    install, _, _, _ = setup
+    install(lambda r: httpx.Response(status, json={"error": "x"}), "desktop")
+    with pytest.raises(broker.BrokerUnavailable):
+        await jira._ensure_fresh_token(expired_connection())

@@ -287,7 +287,12 @@ export async function refreshJira(env: Env, refresh_token: string): Promise<Refr
       expires_in: typeof j.expires_in === "number" ? j.expires_in : 3600,
     };
   }
-  const msg =
-    (j && (optString(j.error_description) ?? optString(j.error))) || `Atlassian returned HTTP ${res.status}`;
-  return { ok: false, status: 400, error: msg };
+  // Only a definite refusal of the refresh token (400/401/403) is a 400 here — that's what tells the app to ask the
+  // person to reconnect Jira. Anything else (rate limit, Atlassian outage, a 200 without a token) is transient: 502.
+  if (res.status === 400 || res.status === 401 || res.status === 403) {
+    const msg =
+      (j && (optString(j.error_description) ?? optString(j.error))) || `Atlassian returned HTTP ${res.status}`;
+    return { ok: false, status: 400, error: msg };
+  }
+  return { ok: false, status: 502, error: `Atlassian returned HTTP ${res.status}` };
 }
