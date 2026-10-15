@@ -23,6 +23,8 @@ class DocumentSummary(BaseModel):
     synced_at: datetime
     chunk_count: int
     excluded_from_retrieval: bool
+    # Its connection was disconnected with documents kept: still searchable, no longer updated.
+    from_disconnected_source: bool = False
 
 
 class DocumentListResponse(BaseModel):
@@ -46,6 +48,7 @@ class DocumentDetail(BaseModel):
     last_edited_at: datetime | None
     synced_at: datetime
     excluded_from_retrieval: bool
+    from_disconnected_source: bool = False
     chunks: list[ChunkOut]
 
 
@@ -81,12 +84,13 @@ async def list_documents(
             Document.last_edited_at,
             Document.synced_at,
             Document.excluded_from_retrieval,
+            OAuthConnection.disconnected_at,
             func.count(Chunk.id).label("chunk_count"),
         )
         .join(OAuthConnection, OAuthConnection.id == Document.connection_id)
         .outerjoin(Chunk, Chunk.document_id == Document.id)
         .where(OAuthConnection.org_id == auth.org_id)
-        .group_by(Document.id)
+        .group_by(Document.id, OAuthConnection.disconnected_at)
         .limit(limit)
         .offset(offset)
     )
@@ -132,6 +136,7 @@ async def list_documents(
             synced_at=r.synced_at,
             chunk_count=r.chunk_count,
             excluded_from_retrieval=r.excluded_from_retrieval,
+            from_disconnected_source=r.disconnected_at is not None,
         )
         for r in rows
     ]
@@ -145,7 +150,7 @@ async def document_detail(
     session: AsyncSession = Depends(get_session),
 ) -> DocumentDetail:
     stmt = (
-        select(Document)
+        select(Document, OAuthConnection.disconnected_at)
         .join(OAuthConnection, OAuthConnection.id == Document.connection_id)
         .where(Document.id == document_id, OAuthConnection.org_id == auth.org_id)
     )
@@ -153,7 +158,8 @@ async def document_detail(
     if visibility is not None:
         stmt = stmt.where(visibility)
 
-    document = (await session.execute(stmt)).scalar_one_or_none()
+    found = (await session.execute(stmt)).one_or_none()
+    document, disconnected_at = found if found is not None else (None, None)
     if document is None:
         # 404 whether the row doesn't exist or just isn't visible to this
         # caller — a different status code would leak a restricted
@@ -172,6 +178,7 @@ async def document_detail(
         last_edited_at=document.last_edited_at,
         synced_at=document.synced_at,
         excluded_from_retrieval=document.excluded_from_retrieval,
+        from_disconnected_source=disconnected_at is not None,
         chunks=[
             ChunkOut(
                 id=str(c.id),
@@ -203,11 +210,12 @@ async def set_document_excluded(
     # action is already owner/admin-only. 404 whether the row doesn't exist
     # or belongs to another org, not a 403 that would leak existence.
     stmt = (
-        select(Document)
+        select(Document, OAuthConnection.disconnected_at)
         .join(OAuthConnection, OAuthConnection.id == Document.connection_id)
         .where(Document.id == document_id, OAuthConnection.org_id == auth.org_id)
     )
-    document = (await session.execute(stmt)).scalar_one_or_none()
+    found = (await session.execute(stmt)).one_or_none()
+    document, disconnected_at = found if found is not None else (None, None)
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found")
 
@@ -227,4 +235,5 @@ async def set_document_excluded(
         synced_at=document.synced_at,
         chunk_count=chunk_count,
         excluded_from_retrieval=document.excluded_from_retrieval,
+        from_disconnected_source=disconnected_at is not None,
     )
