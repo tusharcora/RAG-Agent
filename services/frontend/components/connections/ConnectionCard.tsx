@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   API_BASE,
+  ApiError,
   connectNotionToken,
   getConnectionMembers,
   getConnectionPreview,
@@ -23,6 +24,15 @@ import { Button } from "@/components/base/buttons/button";
 import { Input } from "@/components/base/input/input";
 
 const LABELS: Record<string, string> = { notion: "Notion", jira: "Jira" };
+// The api's refusal text when the sign-in service rejects Jira's refresh token (app/integrations/jira_auth.py).
+const JIRA_RECONNECT = "Jira needs reconnecting";
+
+// A failed POST /sync/{provider}: show the server's reason and note whether Jira needs reconnecting.
+function syncStartFailed(err: unknown, fallback: string): boolean {
+  const detail = err instanceof ApiError ? err.detail : undefined;
+  toast.error("Sync failed to start", detail ?? fallback);
+  return !!detail && detail.includes(JIRA_RECONNECT);
+}
 
 export function ConnectionCard({
   status,
@@ -54,12 +64,15 @@ export function ConnectionCard({
   const isAdmin = user?.role === "owner" || user?.role === "admin";
   const oneClick = IS_DESKTOP && !!account?.broker_configured && (status.provider === "notion" || status.provider === "jira");
   const [showSecretForm, setShowSecretForm] = useState(false);
+  // Set when Sync now was refused because Jira needs reconnecting (no sync event exists to show it).
+  const [refused, setRefused] = useState(false);
   const { flow, start, cancel, starting } = useConnectFlow({
     // Connecting only saves the token: start the first sync, then show the "Syncing…" badge.
     onDone: (purpose) => {
+      if (purpose === "jira") setRefused(false);
       syncProvider(purpose)
         .then(() => onSynced())
-        .catch(() => toast.error("Sync failed to start", "Press Sync now to try again."));
+        .catch((err) => setRefused(syncStartFailed(err, "Press Sync now to try again.")));
     },
     onSettled: () => onChanged?.(),
   });
@@ -108,9 +121,10 @@ export function ConnectionCard({
           ? `Removed ${removed} that ${removed === 1 ? "is" : "are"} no longer shared or no longer exist${removed === 1 ? "s" : ""}.`
           : undefined,
       );
+      setRefused(false);
       onSynced();
-    } catch {
-      toast.error("Sync failed to start", "Check the API logs.");
+    } catch (err) {
+      setRefused(syncStartFailed(err, "Check the API logs."));
     } finally {
       setSyncing(false);
     }
@@ -119,18 +133,31 @@ export function ConnectionCard({
   const healthy = status.last_sync_status !== "failed" && status.last_sync_status !== "dead_lettered";
   // Task 3 marks a dead Jira refresh token with "Jira needs reconnecting…". If the error text isn't
   // known to the card, any failed/dead-lettered Jira sync offers Reconnect.
+  // A refusal before any event was published (Sync now, auto-sync) comes from status.needs_reconnect or `refused`.
   const needsReconnect =
-    status.provider === "jira" && status.connected && !healthy && (lastError === undefined || lastError.includes("Jira needs reconnecting"));
+    status.provider === "jira" &&
+    status.connected &&
+    (refused ||
+      !!status.needs_reconnect ||
+      (!healthy && (lastError === undefined || lastError.includes(JIRA_RECONNECT))));
   const statusLabel = waiting
     ? "WAITING FOR YOU"
     : !status.connected
     ? "NOT CONNECTED"
+    : needsReconnect
+    ? "NEEDS RECONNECTING"
     : !healthy
       ? "LAST SYNC FAILED"
       : status.dead_lettered_count_24h > 0
         ? `${status.dead_lettered_count_24h} FAILED ITEM${status.dead_lettered_count_24h === 1 ? "" : "S"}`
         : "HEALTHY";
-  const statusTone = waiting ? "text-warning-primary" : !status.connected ? "text-ink-500" : healthy && status.dead_lettered_count_24h === 0 ? "text-success-primary" : "text-error-primary";
+  const statusTone = waiting
+    ? "text-warning-primary"
+    : !status.connected
+      ? "text-ink-500"
+      : healthy && !needsReconnect && status.dead_lettered_count_24h === 0
+        ? "text-success-primary"
+        : "text-error-primary";
 
   return (
     <section className="flex min-w-0 flex-col gap-[22px] rounded-[20px] border border-ink-800 bg-ink-900 p-6">

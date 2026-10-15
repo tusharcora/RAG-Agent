@@ -217,6 +217,34 @@ def test_finish_jira_saves_site(client_for, fake_broker, pg_dsn):
     assert client.get(f"/connect/status/{state}").json()["status"] == "done"
 
 
+def test_connections_reports_needs_reconnect_until_reconnected(make_client, fake_broker, pg_dsn):
+    import uuid
+
+    from app.api.routes import connections as connections_routes
+    from app.integrations import jira_auth
+
+    client = make_client(
+        routers=[(connect_routes.router, "/connect"), (connections_routes.router, "/connections")],
+        base_url=f"http://127.0.0.1:{PORT}",
+        db=True,
+    )
+    state = _start(client, fake_broker, "jira", JIRA_RESULT)
+    assert "Connected to Jira" in client.get("/connect/finish", params=fin(state)).text
+    (row,) = _rows(pg_dsn, client.org_id, "jira")
+
+    def jira_status():
+        (status,) = [c for c in client.get("/connections").json() if c["provider"] == "jira"]
+        return status
+
+    assert jira_status()["needs_reconnect"] is False
+    jira_auth._NEEDS_RECONNECT.add(uuid.UUID(str(row["id"])))  # what a refused refresh records
+    assert jira_status()["needs_reconnect"] is True
+    # Reconnecting (a fresh Connect flow) clears it.
+    state = _start(client, fake_broker, "jira", JIRA_RESULT)
+    assert "Connected to Jira" in client.get("/connect/finish", params=fin(state)).text
+    assert jira_status()["needs_reconnect"] is False
+
+
 def test_finish_denied(client_for, fake_broker, pg_dsn):
     client = client_for(db=True)
     state = _start(client, fake_broker, "notion", {"provider": "notion", "error": "Notion access wasn't granted."})

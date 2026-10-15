@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.crypto import encrypt_token
+from app.integrations.jira_auth import clear_needs_reconnect
 from app.models.rag import OAuthConnection
 
 logger = logging.getLogger(__name__)
@@ -61,6 +62,7 @@ async def save_jira_connection(
     connection.bot_id = None
     connection.updated_at = now
     await session.commit()
+    clear_needs_reconnect(connection.id)
 
     logger.info("Jira connected: site=%s", connection.workspace_name)
     return connection

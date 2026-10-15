@@ -13,7 +13,7 @@ from app.core.auth import AuthContext, require_auth, require_role
 from app.core.config import settings
 from app.core.crypto import decrypt_token, encrypt_token
 from app.core.db import get_session
-from app.integrations.jira_auth import ensure_fresh_token
+from app.integrations.jira_auth import ensure_fresh_token, needs_reconnect
 from app.models.event_log import EventLog
 from app.models.rag import ConnectionMember, Document, OAuthConnection
 
@@ -32,6 +32,8 @@ class ConnectionStatus(BaseModel):
     visibility_mode: str | None
     dead_lettered_count_24h: int
     last_sync_status: str | None  # most recent event_log row's status for this connection, or None if it has never synced
+    # Desktop: the sign-in Worker refused this Jira connection's refresh token (see jira_auth._NEEDS_RECONNECT).
+    needs_reconnect: bool = False
 
 
 @router.get("")
@@ -82,6 +84,7 @@ async def connections(
                 visibility_mode=conn.visibility_mode,
                 dead_lettered_count_24h=dead_lettered_count_24h,
                 last_sync_status=last_sync_status,
+                needs_reconnect=needs_reconnect(conn.id),
             )
         )
     return out

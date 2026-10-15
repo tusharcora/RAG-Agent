@@ -124,3 +124,34 @@ async def test_broker_refresh_status_mapping(setup, status):
     install(lambda r: httpx.Response(400, json={"error": "revoked"}), "desktop")
     with pytest.raises(broker.BrokerRefused):
         await broker.refresh_jira("rt")
+
+
+@pytest.mark.asyncio
+async def test_refusal_marks_connection_and_success_clears_it(setup):
+    # Covers Sync now and auto_sync alike: both refresh through ensure_fresh_token before publishing anything.
+    install, _ = setup
+    conn = expired_connection()
+    jira_auth.clear_needs_reconnect(conn.id)
+    install(lambda r: httpx.Response(400, json={"error": "revoked"}), "desktop")
+    with pytest.raises(HTTPException):
+        await jira_auth.ensure_fresh_token(FakeSession(), conn)
+    assert jira_auth.needs_reconnect(conn.id)
+    # A transient failure leaves the mark alone; a successful refresh clears it.
+    install(lambda r: httpx.Response(502, json={"error": "x"}), "desktop")
+    with pytest.raises(HTTPException):
+        await jira_auth.ensure_fresh_token(FakeSession(), conn)
+    assert jira_auth.needs_reconnect(conn.id)
+    install(ok, "desktop")
+    await jira_auth.ensure_fresh_token(FakeSession(), conn)
+    assert not jira_auth.needs_reconnect(conn.id)
+
+
+@pytest.mark.asyncio
+async def test_transient_failure_does_not_mark(setup):
+    install, _ = setup
+    conn = expired_connection()
+    jira_auth.clear_needs_reconnect(conn.id)
+    install(lambda r: httpx.Response(429, json={"error": "slow down"}), "desktop")
+    with pytest.raises(HTTPException):
+        await jira_auth.ensure_fresh_token(FakeSession(), conn)
+    assert not jira_auth.needs_reconnect(conn.id)

@@ -51,6 +51,8 @@ export interface ConnectionStatus {
   visibility_mode: "org_wide" | "restricted" | null;
   dead_lettered_count_24h: number;
   last_sync_status: "received" | "processing" | "succeeded" | "failed" | "dead_lettered" | null;
+  // Desktop: the sign-in service refused this Jira connection's refresh token (cleared by Reconnect).
+  needs_reconnect?: boolean;
 }
 
 export interface MeResponse {

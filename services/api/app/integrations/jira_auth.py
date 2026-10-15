@@ -1,4 +1,5 @@
 import logging
+import uuid
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -14,6 +15,21 @@ from app.models.rag import OAuthConnection
 logger = logging.getLogger(__name__)
 
 JIRA_TOKEN_URL = "https://auth.atlassian.com/oauth/token"
+RECONNECT = "Jira needs reconnecting. Use Reconnect on the Connections page."
+
+# Desktop only: Jira connections whose refresh token the sign-in Worker reported as refused, so GET /connections
+# can show Reconnect even though the refusal happened before any sync event existed (Sync now, auto_sync, preview).
+# In memory on purpose — the desktop app runs one api process, and oauth_connections has no status column
+# (adding one would need a migration). Cleared by a successful refresh or a reconnect (save_jira_connection).
+_NEEDS_RECONNECT: set[uuid.UUID] = set()
+
+
+def needs_reconnect(connection_id: uuid.UUID) -> bool:
+    return connection_id in _NEEDS_RECONNECT
+
+
+def clear_needs_reconnect(connection_id: uuid.UUID) -> None:
+    _NEEDS_RECONNECT.discard(connection_id)
 
 
 async def ensure_fresh_token(session: AsyncSession, connection: OAuthConnection) -> str:
@@ -50,9 +66,11 @@ async def ensure_fresh_token(session: AsyncSession, connection: OAuthConnection)
         try:
             data = await broker.refresh_jira(refresh_token)
         except broker.BrokerRefused:
-            raise HTTPException(status_code=400, detail="Jira needs reconnecting. Use Reconnect on the Connections page.")
+            _NEEDS_RECONNECT.add(connection.id)
+            raise HTTPException(status_code=400, detail=RECONNECT)
         except broker.BrokerUnavailable:
             raise HTTPException(status_code=502, detail=broker.UNREACHABLE)
+        _NEEDS_RECONNECT.discard(connection.id)
     else:
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
