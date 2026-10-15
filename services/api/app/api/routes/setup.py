@@ -48,6 +48,9 @@ class SetupStatus(BaseModel):
     ollama: OllamaStatus
     required_models: list[str]
     answer_model_candidates: list[str]
+    # The installed name of the search model under any tag (e.g.
+    # "nomic-embed-text:v1.5"), or None when it still has to be downloaded.
+    embed_model: str | None = None
 
 
 class PullRequest(BaseModel):
@@ -69,6 +72,18 @@ def _required_models() -> list[str]:
     return [settings.ollama_embed_model, settings.ollama_chat_model]
 
 
+def _installed_as(model: str, installed: list[str]) -> str | None:
+    """The installed name for `model`: an exact match first, otherwise the same
+    model under another tag ("nomic-embed-text" matches "nomic-embed-text:v1.5").
+    `installed` comes from ollama.list_models(), with ':latest' already stripped."""
+    base = model.removesuffix(":latest")
+    if base in installed:
+        return base
+    if ":" in base:
+        return None
+    return next((m for m in installed if m.split(":", 1)[0] == base), None)
+
+
 def _candidates(models: list[str]) -> list[str]:
     return [m for m in models if "embed" not in m]
 
@@ -87,6 +102,7 @@ async def status() -> SetupStatus:
         ollama=OllamaStatus(running=models is not None, models=models or []),
         required_models=_required_models(),
         answer_model_candidates=_candidates(models or []),
+        embed_model=_installed_as(settings.ollama_embed_model, models or []),
     )
 
 
@@ -130,16 +146,17 @@ async def complete_local(
     body: CompleteLocal, auth: AuthContext = Depends(_owner), session: AsyncSession = Depends(get_session)
 ) -> dict:
     installed = await ollama.list_models() or []
-    have = set(installed) | {m.removesuffix(":latest") for m in installed}
-    for needed in (settings.ollama_embed_model, body.answer_model):
-        if needed.removesuffix(":latest") not in have:
-            raise HTTPException(status_code=400, detail=f"{needed} isn't installed in Ollama yet.")
+    embed_model = _installed_as(settings.ollama_embed_model, installed)
+    if embed_model is None:
+        raise HTTPException(status_code=400, detail=f"{settings.ollama_embed_model} isn't installed in Ollama yet.")
+    if body.answer_model.removesuffix(":latest") not in installed:
+        raise HTTPException(status_code=400, detail=f"{body.answer_model} isn't installed in Ollama yet.")
     await apply_llm_choice(
         session,
         auth.org_id,
         LlmSettingsIn(provider="local", model=body.answer_model, base_url=f"{settings.ollama_url}/v1"),
     )
-    desktop_state.save_config(setup_complete=True, embedding_provider="ollama")
+    desktop_state.save_config(setup_complete=True, embedding_provider="ollama", ollama_embed_model=embed_model)
     desktop_state.schedule_restart()
     return {"restarting": True}
 

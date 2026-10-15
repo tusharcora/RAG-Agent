@@ -267,3 +267,22 @@ def test_put_llm_unchanged_after_refactor(make_client, pg_dsn, tmp_path):
     assert body["provider"] == "local" and body["model"] == "llama3.2"
     assert body["base_url"] == "http://127.0.0.1:11434/v1" and body["has_api_key"] is False
     assert set(body) == {"provider", "default_model", "providers", "model", "base_url", "has_api_key", "api_key_hint"}
+
+
+def test_status_reports_installed_embed_model_under_any_tag(make_client):
+    body = make_client(_tags("nomic-embed-text:v1.5", "qwen3.6:35b")).get("/setup/status").json()
+    assert body["embed_model"] == "nomic-embed-text:v1.5"
+    assert body["answer_model_candidates"] == ["qwen3.6:35b"]
+
+
+def test_status_embed_model_none_when_missing(make_client):
+    body = make_client(_tags("qwen3.6:35b")).get("/setup/status").json()
+    assert body["embed_model"] is None
+
+
+def test_complete_local_accepts_tagged_embed_model_and_saves_it(make_client, pg_dsn, restarts, tmp_path):
+    client = make_client(_tags("nomic-embed-text:v1.5", "qwen3.6:35b"), db=True)
+    r = client.post("/setup/complete-local", json={"answer_model": "qwen3.6:35b"})
+    assert r.status_code == 200
+    assert _desktop_json(tmp_path)["ollama_embed_model"] == "nomic-embed-text:v1.5"
+    assert len(restarts) == 1

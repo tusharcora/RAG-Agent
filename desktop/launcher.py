@@ -221,6 +221,10 @@ def child_env(base_url: str, db_uri: str, home: Path, paths: Paths) -> dict:
         env.pop(env_key, None)
         if keys.get(secret_key):
             env[env_key] = keys[secret_key]
+    # The search model's installed name, which setup records when Ollama has
+    # it under a tag other than :latest (e.g. "nomic-embed-text:v1.5").
+    if config.get("ollama_embed_model"):
+        env["OLLAMA_EMBED_MODEL"] = config["ollama_embed_model"]
     return env
 
 

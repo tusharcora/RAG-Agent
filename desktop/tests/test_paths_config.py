@@ -196,3 +196,13 @@ def test_migrate_skips_already_applied_files(pg_uri, tmp_path):
             await conn.close()
 
     assert asyncio.run(scenario()) == 2
+
+
+def test_child_env_maps_saved_embed_model(tmp_path, monkeypatch):
+    monkeypatch.delenv("OLLAMA_EMBED_MODEL", raising=False)
+    paths = launcher.resolve_paths(None)
+    env = launcher.child_env("http://127.0.0.1:1", "postgresql://u@/db", tmp_path, paths)
+    assert "OLLAMA_EMBED_MODEL" not in env
+    desktop_config.save(tmp_path, ollama_embed_model="nomic-embed-text:v1.5")
+    env = launcher.child_env("http://127.0.0.1:1", "postgresql://u@/db", tmp_path, paths)
+    assert env["OLLAMA_EMBED_MODEL"] == "nomic-embed-text:v1.5"

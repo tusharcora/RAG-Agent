@@ -6,6 +6,8 @@ export interface SetupStatus {
   ollama: { running: boolean; models: string[] };
   required_models: string[];
   answer_model_candidates: string[];
+  /** Installed name of the search model under any tag, or null if it must be downloaded. */
+  embed_model: string | null;
 }
 
 export interface PullProgress {
@@ -175,9 +177,22 @@ export async function waitForRestart(): Promise<void> {
 // --- formatting / helpers ---
 
 /** Ollama lists "llama3.2:latest" for a model pulled as "llama3.2". */
-export function isInstalled(model: string, installed: string[]): boolean {
+/**
+ * The installed name for `model`: an exact match first (ignoring ":latest"),
+ * otherwise the same model under another tag ("nomic-embed-text" matches
+ * "nomic-embed-text:v1.5"). Mirrors the API's `_installed_as`.
+ */
+export function installedName(model: string, installed: string[]): string | null {
   const strip = (m: string) => m.replace(/:latest$/, "");
-  return installed.some((m) => strip(m) === strip(model));
+  const base = strip(model);
+  const exact = installed.find((m) => strip(m) === base);
+  if (exact) return strip(exact);
+  if (base.includes(":")) return null;
+  return installed.find((m) => m.split(":", 1)[0] === base) ?? null;
+}
+
+export function isInstalled(model: string, installed: string[]): boolean {
+  return installedName(model, installed) !== null;
 }
 
 function sizeParts(bytes: number): { value: string; unit: "GB" | "MB" } {

@@ -4,6 +4,7 @@
 
 /api/tags      installed models (empty at first with --start-empty)
 /api/pull      streams 5 progress lines over ~2 s, then the model is installed
+/_pulls        test hook: every model a client asked to download
 /api/embed     random 768-d vectors (like nomic-embed-text)
 /v1/models, /v1/chat/completions   OpenAI-style; the answer is "Answer [1]"
 """
@@ -18,6 +19,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 MODELS: list[str] = []
+PULLS: list[str] = []  # every model a client asked to download, for tests (GET /_pulls)
 LOCK = threading.Lock()
 
 
@@ -56,10 +58,14 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         with LOCK:
             names = list(MODELS)
+        tagged = [m if ":" in m else f"{m}:latest" for m in names]
         if self.path == "/api/tags":
-            self._json({"models": [{"name": f"{m}:latest"} for m in names]})
+            self._json({"models": [{"name": m} for m in tagged]})
         elif self.path == "/v1/models":
-            self._json({"data": [{"id": f"{m}:latest"} for m in names]})
+            self._json({"data": [{"id": m} for m in tagged]})
+        elif self.path == "/_pulls":
+            with LOCK:
+                self._json({"pulls": list(PULLS)})
         else:
             self._json({"error": "not found"}, 404)
 
@@ -67,6 +73,8 @@ class Handler(BaseHTTPRequestHandler):
         body = self._body()
         if self.path == "/api/pull":
             model = body.get("model", "")
+            with LOCK:
+                PULLS.append(model)
             total = 1_000_000
             lines = [({"status": "pulling manifest"}, 0.4)]
             lines += [({"status": "pulling layer", "total": total, "completed": total * i // 4}, 0.4) for i in range(1, 5)]
@@ -105,8 +113,11 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=11434)
     ap.add_argument("--start-empty", action="store_true")
+    ap.add_argument("--models", default="", help="comma-separated installed models, e.g. nomic-embed-text:v1.5,qwen3.6:35b")
     args = ap.parse_args()
-    if not args.start_empty:
+    if args.models:
+        MODELS.extend(m for m in args.models.split(",") if m)
+    elif not args.start_empty:
         MODELS.extend(["nomic-embed-text", "llama3.2"])
     ThreadingHTTPServer(("127.0.0.1", args.port), Handler).serve_forever()
 

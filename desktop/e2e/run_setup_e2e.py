@@ -17,6 +17,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -136,8 +137,9 @@ class Launcher:
                 kill_leftovers(self.home)  # kill() reaches only the launcher, not its Postgres/children
 
 
-def fake_ollama(port: int, empty: bool = True) -> subprocess.Popen:
-    cmd = [sys.executable, str(HERE / "fake_ollama.py"), "--port", str(port)] + (["--start-empty"] if empty else [])
+def fake_ollama(port: int, empty: bool = True, models: str = "") -> subprocess.Popen:
+    cmd = [sys.executable, str(HERE / "fake_ollama.py"), "--port", str(port)]
+    cmd += ["--models", models] if models else (["--start-empty"] if empty else [])
     p = subprocess.Popen(cmd)
     try:
         wait_http(f"http://127.0.0.1:{port}/api/tags")
@@ -196,12 +198,13 @@ def path_a() -> None:
             print("A: install screen shown while Ollama is down")
             fake = fake_ollama(FAKE_PORT)
             t0 = time.time()
-            expect(page.get_by_role("heading", name="Download the models")).to_be_visible(timeout=5000)
+            expect(page.get_by_role("heading", name="Choose your models")).to_be_visible(timeout=5000)
             print(f"A: advanced on its own after {time.time() - t0:.1f}s")
-            cont = page.get_by_role("button", name="Continue")
-            expect(cont).to_be_enabled(timeout=30000)
-            print("A: both downloads finished")
-            cont.click()
+            page.wait_for_timeout(1500)
+            pulls = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{FAKE_PORT}/_pulls").read())["pulls"]
+            assert pulls == [], f"downloads started before the user asked: {pulls}"
+            print("A: nothing downloads until the user presses the button")
+            page.get_by_role("button", name=re.compile(r"^Download .* and continue$")).click()
             expect(page.get_by_text("FINISHING SETUP")).to_be_visible(timeout=10000)
             print("A: finishing screen shown")
             page.wait_for_url(re.compile(r"/connections/?$"), timeout=90000)
@@ -227,6 +230,43 @@ def path_a() -> None:
             fake.terminate()
             fake.wait()
     print("PASS path A (local models)")
+
+
+def path_c() -> None:
+    """Regression: models already installed (search model under a non-latest tag)
+    means no downloads at all, and one of the user's own models is preselected."""
+    home = tempfile.mkdtemp(prefix="ka-e2e-c-", dir="/tmp")
+    os.chmod(home, 0o755)
+    HOMES.append(home)
+    fake = None
+    launcher = None
+    try:
+        fake = fake_ollama(FAKE_PORT, models="nomic-embed-text:v1.5,qwen3.6:35b")
+        launcher = Launcher(home, {"OLLAMA_URL": f"http://127.0.0.1:{FAKE_PORT}"})
+        with sync_playwright() as p:
+            b = launch_browser(p)
+            page = b.new_page()
+            page.goto(launcher.url)
+            page.wait_for_url(re.compile(r"/setup/?$"), timeout=30000)
+            # Ollama is already running, so setup opens straight on the models step.
+            expect(page.get_by_role("heading", name="Your models are ready")).to_be_visible(timeout=10000)
+            expect(page.get_by_role("combobox")).to_have_value("qwen3.6:35b")
+            page.get_by_role("button", name="Continue", exact=True).click()
+            expect(page.get_by_text("FINISHING SETUP")).to_be_visible(timeout=10000)
+            page.wait_for_url(re.compile(r"/connections/?$"), timeout=90000)
+            pulls = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{FAKE_PORT}/_pulls").read())["pulls"]
+            assert pulls == [], f"unexpected downloads: {pulls}"
+            config = json.loads(Path(home, "desktop.json").read_text())
+            assert config["ollama_embed_model"] == "nomic-embed-text:v1.5", config
+            print("C: installed models used as-is, no downloads, tagged search model recorded")
+            b.close()
+    finally:
+        if launcher:
+            launcher.stop()
+        if fake:
+            fake.terminate()
+            fake.wait()
+    print("PASS path C (models already installed)")
 
 
 def path_b() -> None:
@@ -274,6 +314,7 @@ def path_b() -> None:
 def main() -> int:
     try:
         path_a()
+        path_c()
         path_b()
     finally:
         time.sleep(1)
