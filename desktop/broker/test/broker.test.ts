@@ -660,6 +660,30 @@ describe("github_repos", () => {
     expect(j.login).toBe("octo");
   });
 
+  it("callback github_repos keeps an installation without an account login (blank)", async () => {
+    ghToken(GH_TOKEN_OK);
+    ghUser();
+    fetchMock
+      .get("https://api.github.com")
+      .intercept({ path: "/user/installations?per_page=100&page=1" })
+      .reply(200, {
+        total_count: 3,
+        installations: [
+          { id: 7, account: null },
+          { id: 8, account: { type: "Organization" } },
+          { id: 9, account: { login: "octo", type: "User" } },
+        ],
+      });
+    const { state, verifier, pickup } = await signIn("github_repos");
+    const j = (await (await redeem(state, verifier, pickup)).json()) as any;
+    expect(j.error).toBeUndefined();
+    expect(j.installations).toEqual([
+      { id: 7, account_login: "", account_type: "User" },
+      { id: 8, account_login: "", account_type: "Organization" },
+      { id: 9, account_login: "octo", account_type: "User" },
+    ]);
+  });
+
   it("callback github_repos does not follow a next link to another host", async () => {
     ghToken(GH_TOKEN_OK);
     ghUser();

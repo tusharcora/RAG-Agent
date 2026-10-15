@@ -198,7 +198,8 @@ async function listInstallations(headers: Record<string, string>): Promise<Githu
       if (!i || typeof i.id !== "number") throw new ProviderError("GitHub installation id missing");
       out.push({
         id: i.id,
-        account_login: requireString(i.account?.login, "GitHub installation account"),
+        // Informational only (installations are keyed by id): a missing login mustn't abort sign-in.
+        account_login: optString(i.account?.login) ?? "",
         account_type: optString(i.account?.type) ?? "User",
       });
     }
