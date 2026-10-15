@@ -47,6 +47,9 @@ folder to start over. Set `KNOWLEDGE_AGENT_HOME` to use a different folder.
 
 ## Build the app
 
+Prerequisites on macOS: Xcode Command Line Tools (`xcode-select --install`), Rust
+(via [rustup](https://rustup.rs)), Node 20+, and Python 3.12.
+
 ```bash
 python3.12 -m venv .venv-desktop && .venv-desktop/bin/pip install -r desktop/requirements.txt
 .venv-desktop/bin/python desktop/build_backend.py     # backend bundle + static UI
@@ -60,6 +63,8 @@ on its own machine.
 
 ## End-to-end check (Linux/macOS, no real models or keys)
 
+Build the backend bundle first (`python desktop/build_backend.py`, above).
+
 ```bash
 pip install playwright && playwright install chromium    # or set CHROMIUM=/path/to/chromium
 python desktop/e2e/run_setup_e2e.py
@@ -67,7 +72,7 @@ python desktop/e2e/run_setup_e2e.py
 
 Runs the bundled launcher and drives the first-run setup in a browser: path A (local
 models, against `e2e/fake_ollama.py`) and path B (API keys, against local Voyage and
-Anthropic stubs). Both should print `PASS`, and no `postgres` process should remain.
+Anthropic stubs). Both should print `PASS`, and the final "leftover processes" line should say `none`.
 
 ## Mac checklist (manual, before releasing)
 

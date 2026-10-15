@@ -25,7 +25,8 @@ from playwright.sync_api import expect, sync_playwright
 HERE = Path(__file__).resolve().parent
 BACKEND = HERE.parent / "tauri" / "src-tauri" / "resources" / "backend"
 PY = BACKEND / "python" / "bin" / "python"
-CHROMIUM = os.environ.get("CHROMIUM", "/opt/pw-browsers/chromium")
+CHROMIUM = os.environ.get("CHROMIUM")  # path to a Chromium binary; unset = Playwright's own
+HOMES: list[str] = []  # every data folder this run created, for the leak check
 FAKE_PORT, APP_PORT, STUB_PORT = 11499, 47831, 47841
 GOOD_VOYAGE, GOOD_ANTHROPIC = "pa-good", "sk-ant-good"
 
@@ -82,8 +83,25 @@ def wait_http(url: str, timeout: float = 30) -> None:
     raise TimeoutError(url)
 
 
+def leftovers(home: str) -> list[int]:
+    """Processes whose command line mentions this run's data folder (Postgres, children)."""
+    out = subprocess.run(["pgrep", "-f", home], capture_output=True, text=True).stdout.split()
+    return [int(p) for p in out if int(p) != os.getpid()]
+
+
+def kill_leftovers(home: str) -> list[int]:
+    pids = leftovers(home)
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    return pids
+
+
 class Launcher:
     def __init__(self, home: str, env_extra: dict):
+        self.home = home
         env = {**os.environ, "KNOWLEDGE_AGENT_HOME": home, **env_extra}
         self.proc = subprocess.Popen(
             [str(PY), "-I", str(BACKEND / "launcher.py"), "--port", str(APP_PORT), "--no-browser", "--lifeline",
@@ -101,9 +119,11 @@ class Launcher:
                 if m and not self.url:
                     self.url = m.group(1)
                     ready.set()
+            ready.set()  # launcher exited: stop waiting
 
         threading.Thread(target=pump, daemon=True).start()
-        if not ready.wait(120):
+        if not ready.wait(float(os.environ.get("E2E_READY_TIMEOUT", 120))) or not self.url:
+            self.stop()
             raise RuntimeError("launcher never became ready:\n" + "\n".join(self.lines[-30:]))
 
     def stop(self):
@@ -113,12 +133,18 @@ class Launcher:
                 self.proc.wait(30)
             except subprocess.TimeoutExpired:
                 self.proc.kill()
+                kill_leftovers(self.home)  # kill() reaches only the launcher, not its Postgres/children
 
 
 def fake_ollama(port: int, empty: bool = True) -> subprocess.Popen:
     cmd = [sys.executable, str(HERE / "fake_ollama.py"), "--port", str(port)] + (["--start-empty"] if empty else [])
     p = subprocess.Popen(cmd)
-    wait_http(f"http://127.0.0.1:{port}/api/tags")
+    try:
+        wait_http(f"http://127.0.0.1:{port}/api/tags")
+    except BaseException:
+        p.terminate()
+        p.wait()
+        raise
     return p
 
 
@@ -147,15 +173,18 @@ asyncio.run(main(sys.argv[1]))
 
 
 def launch_browser(p):
-    return p.chromium.launch(executable_path=CHROMIUM, args=["--no-sandbox"])
+    kwargs = {"executable_path": CHROMIUM} if CHROMIUM else {}
+    return p.chromium.launch(args=["--no-sandbox"], **kwargs)
 
 
 def path_a() -> None:
     home = tempfile.mkdtemp(prefix="ka-e2e-a-", dir="/tmp")
     os.chmod(home, 0o755)
+    HOMES.append(home)
     fake = None
-    launcher = Launcher(home, {"OLLAMA_URL": f"http://127.0.0.1:{FAKE_PORT}"})
+    launcher = None
     try:
+        launcher = Launcher(home, {"OLLAMA_URL": f"http://127.0.0.1:{FAKE_PORT}"})
         with sync_playwright() as p:
             b = launch_browser(p)
             page = b.new_page()
@@ -192,22 +221,26 @@ def path_a() -> None:
             page.screenshot(path=f"{home}/a-chat.png")
             b.close()
     finally:
-        launcher.stop()
+        if launcher:
+            launcher.stop()
         if fake:
             fake.terminate()
+            fake.wait()
     print("PASS path A (local models)")
 
 
 def path_b() -> None:
     home = tempfile.mkdtemp(prefix="ka-e2e-b-", dir="/tmp")
     os.chmod(home, 0o755)
+    HOMES.append(home)
     srv = ThreadingHTTPServer(("127.0.0.1", STUB_PORT), Stub)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
-    launcher = Launcher(home, {
-        "VOYAGE_BASE_URL": f"http://127.0.0.1:{STUB_PORT}",
-        "ANTHROPIC_BASE_URL": f"http://127.0.0.1:{STUB_PORT}/anthropic",
-    })
+    launcher = None
     try:
+        launcher = Launcher(home, {
+            "VOYAGE_BASE_URL": f"http://127.0.0.1:{STUB_PORT}",
+            "ANTHROPIC_BASE_URL": f"http://127.0.0.1:{STUB_PORT}/anthropic",
+        })
         with sync_playwright() as p:
             b = launch_browser(p)
             page = b.new_page()
@@ -232,17 +265,23 @@ def path_b() -> None:
             print("B: good keys landed on /connections/")
             b.close()
     finally:
-        launcher.stop()
+        if launcher:
+            launcher.stop()
         srv.shutdown()
     print("PASS path B (API keys)")
 
 
 def main() -> int:
-    path_a()
-    path_b()
-    time.sleep(1)
-    left = subprocess.run(["pgrep", "-f", "postgres -D"], capture_output=True, text=True).stdout.strip()
-    print("leftover postgres processes:", left or "none")
+    try:
+        path_a()
+        path_b()
+    finally:
+        time.sleep(1)
+        left = sorted({pid for h in HOMES for pid in leftovers(h)})
+        print("leftover processes from this run:", left or "none")
+        if left:
+            for h in HOMES:
+                kill_leftovers(h)
     return 1 if left else 0
 
 
