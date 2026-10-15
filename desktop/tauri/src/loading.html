@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Knowledge Agent</title>
+<style>
+  :root {
+    --bg: #faf9f5;
+    --fg: #141413;
+    --muted: #6b6a64;
+    --track: #e8e6dc;
+    --bar: #141413;
+    --panel: #f0eee6;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "DejaVu Serif", serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141413;
+      --fg: #f0eee6;
+      --muted: #9c9a92;
+      --track: #2b2a27;
+      --bar: #f0eee6;
+      --panel: #1f1e1c;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--sans);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 32px;
+    -webkit-user-select: none;
+    user-select: none;
+    cursor: default;
+  }
+  main { width: 100%; max-width: 560px; }
+  h1 {
+    font-family: var(--serif);
+    font-weight: 400;
+    font-size: 34px;
+    letter-spacing: -0.01em;
+    margin: 0 0 28px;
+  }
+  .bar {
+    position: relative;
+    height: 2px;
+    background: var(--track);
+    overflow: hidden;
+    border-radius: 1px;
+  }
+  .bar::after {
+    content: "";
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 35%;
+    background: var(--bar);
+    animation: slide 1.6s ease-in-out infinite;
+  }
+  @keyframes slide {
+    from { transform: translateX(-100%); }
+    to { transform: translateX(290%); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .bar::after { animation: none; width: 100%; opacity: 0.4; }
+  }
+  .caption {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+    margin: 14px 0 0;
+  }
+  #error { display: none; }
+  body.failed #starting { display: none; }
+  body.failed #error { display: block; }
+  #error p { margin: 0 0 16px; line-height: 1.5; color: var(--muted); }
+  #error h1 { margin-bottom: 12px; }
+  pre {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    line-height: 1.5;
+    background: var(--panel);
+    color: var(--fg);
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin: 0 0 20px;
+    max-height: 340px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    user-select: text;
+    -webkit-user-select: text;
+  }
+  button {
+    font: inherit;
+    font-size: 14px;
+    background: var(--fg);
+    color: var(--bg);
+    border: 0;
+    border-radius: 8px;
+    padding: 9px 18px;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; cursor: default; }
+  button:focus-visible { outline: 2px solid var(--muted); outline-offset: 2px; }
+</style>
+</head>
+<body>
+<main>
+  <section id="starting" aria-live="polite">
+    <h1>Knowledge Agent</h1>
+    <div class="bar" role="progressbar" aria-label="Starting up"></div>
+    <p class="caption">Starting up…</p>
+  </section>
+  <section id="error" role="alert">
+    <h1>Knowledge Agent couldn’t start</h1>
+    <p>The local service didn’t come up. The last lines it printed are below.</p>
+    <pre id="log"></pre>
+    <button id="retry" type="button">Try again</button>
+  </section>
+</main>
+<script>
+  (function () {
+    var tauri = window.__TAURI__;
+    var log = document.getElementById("log");
+    var retry = document.getElementById("retry");
+
+    function showError(lines) {
+      log.textContent = (lines && lines.length ? lines : ["(no output)"]).join("\n");
+      log.scrollTop = log.scrollHeight;
+      retry.disabled = false;
+      document.body.classList.add("failed");
+      retry.focus();
+    }
+
+    function showStarting() {
+      document.body.classList.remove("failed");
+    }
+
+    if (!tauri) return;
+    tauri.event.listen("backend-failed", function (event) { showError(event.payload); });
+    // A failure may have been reported before this page subscribed.
+    tauri.core.invoke("backend_status").then(function (status) {
+      if (status && status.state === "failed") showError(status.lines);
+    });
+    retry.addEventListener("click", function () {
+      retry.disabled = true;
+      showStarting();
+      tauri.core.invoke("retry_backend");
+    });
+  })();
+</script>
+</body>
+</html>

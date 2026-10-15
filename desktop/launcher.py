@@ -244,6 +244,9 @@ def running_instance(home: Path) -> str | None:
 # changes its env). EX_TEMPFAIL from sysexits.h.
 RESTART_CODE = 75
 LOG_LINES = 40
+# Seconds a child gets between terminate and kill. Kept well under the
+# desktop shell's 15 s quit grace, which also has to cover stopping Postgres.
+CHILD_GRACE = 5
 
 
 class Supervisor:
@@ -354,7 +357,7 @@ class Supervisor:
             self._restore_handlers()
 
     def stop(self) -> None:
-        """Terminate every child (10 s grace, then kill), then on_stop().
+        """Terminate every child (CHILD_GRACE, then kill), then on_stop().
         Idempotent."""
         with self._lock:
             if self._stopped:
@@ -444,7 +447,7 @@ class Supervisor:
             for proc in procs:
                 if proc.poll() is None:
                     proc.terminate()
-            deadline = time.monotonic() + 10
+            deadline = time.monotonic() + CHILD_GRACE
             for proc in procs:
                 try:
                     proc.wait(timeout=max(0.0, deadline - time.monotonic()))
