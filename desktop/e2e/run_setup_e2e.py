@@ -624,8 +624,13 @@ def path_g() -> None:
             titles = ["e2e-octo/notes · README.md", "e2e-octo/notes #1: Ship it"]
             deadline = time.time() + 60
             while True:
-                if all(page.get_by_text(t, exact=True).count() for t in titles):
+                # Right after a (re)load the page hasn't fetched its documents yet: give it a moment.
+                try:
+                    for t in titles:
+                        expect(page.get_by_text(t, exact=True)).to_be_visible(timeout=5000)
                     break
+                except AssertionError:
+                    pass
                 if time.time() > deadline:
                     print("G FAILED; page text:", page.locator("body").inner_text()[:1500])
                     print("launcher output:", *launcher.lines[-60:], sep="\n")
