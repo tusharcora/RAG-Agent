@@ -13,7 +13,9 @@ from app.core.auth import AuthContext, require_auth, require_role
 from app.core.config import settings
 from app.core.crypto import decrypt_token, encrypt_token
 from app.core.db import get_session
-from app.integrations.jira_auth import ensure_fresh_token, needs_reconnect
+from app.integrations.connection_state import require_connected
+from app.integrations.connections import save_notion_connection
+from app.integrations.jira_auth import clear_needs_reconnect, ensure_fresh_token, needs_reconnect
 from app.models.event_log import EventLog
 from app.models.rag import ConnectionMember, Document, OAuthConnection
 
@@ -34,6 +36,10 @@ class ConnectionStatus(BaseModel):
     last_sync_status: str | None  # most recent event_log row's status for this connection, or None if it has never synced
     # Desktop: the sign-in Worker refused this Jira connection's refresh token (see jira_auth._NEEDS_RECONNECT).
     needs_reconnect: bool = False
+    # Disconnected (POST /{id}/disconnect): connected is False, the row and id remain, and
+    # document_count says how many documents were kept (still searchable, never updated).
+    disconnected: bool = False
+    document_count: int = 0
 
 
 @router.get("")
@@ -63,6 +69,28 @@ async def connections(
             )
             continue
 
+        document_count = (
+            await session.execute(select(func.count(Document.id)).where(Document.connection_id == conn.id))
+        ).scalar_one()
+
+        if conn.disconnected_at is not None:
+            out.append(
+                ConnectionStatus(
+                    id=str(conn.id),
+                    provider=provider,
+                    connected=False,
+                    workspace_name=conn.workspace_name,
+                    site_url=conn.site_url,
+                    last_synced_at=None,
+                    visibility_mode=conn.visibility_mode,
+                    dead_lettered_count_24h=0,
+                    last_sync_status=None,
+                    disconnected=True,
+                    document_count=document_count,
+                )
+            )
+            continue
+
         # No dedicated "last synced" column — embed.py updates documents.synced_at
         # on every sync (even no-op content-unchanged skips), so MAX() here is an
         # accurate live signal without a redundant field that could drift.
@@ -85,6 +113,7 @@ async def connections(
                 dead_lettered_count_24h=dead_lettered_count_24h,
                 last_sync_status=last_sync_status,
                 needs_reconnect=needs_reconnect(conn.id),
+                document_count=document_count,
             )
         )
     return out
@@ -129,6 +158,62 @@ async def _get_org_connection(session: AsyncSession, connection_id: uuid.UUID, o
     if connection is None:
         raise HTTPException(status_code=404, detail="Connection not found")
     return connection
+
+
+class DisconnectRequest(BaseModel):
+    remove_documents: bool
+
+
+async def _delete_documents(session: AsyncSession, connection_id: uuid.UUID) -> int:
+    # Chunks go with them (chunks.document_id ON DELETE CASCADE).
+    result = await session.execute(
+        delete(Document).where(Document.connection_id == connection_id).returning(Document.id)
+    )
+    return len(result.all())
+
+
+@router.post("/{connection_id}/disconnect")
+async def disconnect(
+    connection_id: uuid.UUID,
+    request: DisconnectRequest,
+    auth: AuthContext = Depends(require_auth),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Wipes the stored tokens and marks the connection disconnected, which stops
+    every sync path (Sync now, auto_sync, worker events already queued). The row
+    stays so a reconnect can reuse it and so kept documents still have a parent.
+    Idempotent: a repeat keeps the first disconnected_at, and remove_documents
+    still removes whatever was kept."""
+    require_role(auth, "owner", "admin")
+    connection = await _get_org_connection(session, connection_id, auth.org_id)
+
+    removed = await _delete_documents(session, connection.id) if request.remove_documents else 0
+    connection.access_token = None
+    connection.refresh_token = None
+    connection.expires_at = None
+    if connection.disconnected_at is None:
+        connection.disconnected_at = datetime.now(timezone.utc)
+    connection.updated_at = datetime.now(timezone.utc)
+    await session.commit()
+    clear_needs_reconnect(connection.id)
+    return {"disconnected": True, "removed": removed}
+
+
+@router.post("/{connection_id}/remove-documents")
+async def remove_documents(
+    connection_id: uuid.UUID,
+    auth: AuthContext = Depends(require_auth),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Deletes the documents a disconnected connection kept. A live connection's
+    documents are managed by sync, so this refuses (409) while connected."""
+    require_role(auth, "owner", "admin")
+    connection = await _get_org_connection(session, connection_id, auth.org_id)
+    if connection.disconnected_at is None:
+        raise HTTPException(status_code=409, detail="Disconnect this connection before removing its documents.")
+    removed = await _delete_documents(session, connection.id)
+    await session.commit()
+    return {"removed": removed}
 
 
 class SetVisibilityRequest(BaseModel):
@@ -227,6 +312,7 @@ async def preview(
     once, when a connection card first renders as connected.
     """
     connection = await _get_org_connection(session, connection_id, auth.org_id)
+    require_connected(connection)
 
     async with httpx.AsyncClient(timeout=15) as client:
         if connection.provider == "notion":
@@ -316,20 +402,14 @@ async def connect_notion_with_token(
         raise HTTPException(status_code=502, detail=f"Notion returned {resp.status_code}.")
     bot = resp.json().get("bot") or {}
 
-    connection = (
-        await session.execute(
-            select(OAuthConnection).where(OAuthConnection.provider == "notion", OAuthConnection.org_id == auth.org_id)
-        )
-    ).scalar_one_or_none()
-    if connection is None:
-        connection = OAuthConnection(id=uuid.uuid4(), org_id=auth.org_id, provider="notion", access_token="")
-        session.add(connection)
-    connection.workspace_id = bot.get("workspace_id") or ""
-    connection.workspace_name = bot.get("workspace_name") or "Notion workspace"
-    connection.access_token = encrypt_token(token)
-    connection.bot_id = resp.json().get("id")
-    connection.refresh_token = None
-    connection.expires_at = None
-    connection.updated_at = datetime.now(timezone.utc)
-    await session.commit()
+    connection = await save_notion_connection(
+        session,
+        auth.org_id,
+        {
+            "access_token": token,
+            "workspace_id": bot.get("workspace_id") or "",
+            "workspace_name": bot.get("workspace_name"),
+            "bot_id": resp.json().get("id"),
+        },
+    )
     return {"connected": True, "workspace_name": connection.workspace_name}

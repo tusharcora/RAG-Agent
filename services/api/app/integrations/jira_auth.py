@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.crypto import decrypt_token, encrypt_token
 from app.integrations import broker
+from app.integrations.connection_state import require_connected
 from app.models.rag import OAuthConnection
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,8 @@ async def ensure_fresh_token(session: AsyncSession, connection: OAuthConnection)
     app/integrations/jira.py — duplicated because /sync/jira in this service
     also calls the Jira API directly (to enumerate issues) rather than
     routing through the worker."""
+    # Disconnected (tokens wiped): nothing to refresh, and refreshing would bring the tokens back.
+    require_connected(connection, "jira")
     # connection.access_token/refresh_token are ciphertext at rest (see
     # app/core/crypto.py). A row written before encryption landed (or otherwise
     # corrupted) raises InvalidToken here — fail the request cleanly rather than

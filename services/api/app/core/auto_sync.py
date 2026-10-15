@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.routes.sync import sync_jira_connection, sync_notion_connection
 from app.core.config import settings
 from app.core.db import get_session
+from app.integrations.connection_state import is_disconnected
 from app.models.rag import OAuthConnection
 
 logger = logging.getLogger(__name__)
@@ -31,7 +32,10 @@ async def _session_scope():
 
 async def _sync_all_connections() -> None:
     async with _session_scope() as session:
-        connections = (await session.execute(select(OAuthConnection))).scalars().all()
+        # Disconnected rows keep their documents but have no tokens: never sync them.
+        connections = (
+            await session.execute(select(OAuthConnection).where(OAuthConnection.disconnected_at.is_(None)))
+        ).scalars().all()
 
     logger.info("auto_sync: starting pass over %d connection(s)", len(connections))
     for connection in connections:
@@ -41,16 +45,17 @@ async def _sync_all_connections() -> None:
         # connection, org-wide or otherwise.
         try:
             async with _session_scope() as session:
-                # connection was loaded (and detached) by the enumeration
-                # session above, not this one — merge() re-attaches it here so
-                # that ensure_fresh_token()'s connection.access_token = ...;
-                # await session.commit() (called from sync_jira_connection)
-                # actually persists the refreshed token. Without this, the
-                # mutation lands on a session-less object and session.commit()
-                # silently no-ops on it: the DB keeps the stale token, and
-                # every subsequent pass re-refreshes (and re-spends the same
-                # refresh_token) instead of the refresh ever sticking.
-                connection = await session.merge(connection)
+                # Re-read the row in this session rather than merge() the
+                # detached copy from the enumeration above: it has to be
+                # attached so ensure_fresh_token()'s connection.access_token =
+                # ...; await session.commit() (called from sync_jira_connection)
+                # actually persists a refreshed token, and merge() would also
+                # copy that older snapshot back over the row, undoing a
+                # disconnect (wiped tokens, disconnected_at) made since.
+                fresh = await session.get(OAuthConnection, connection.id, populate_existing=True)
+                if fresh is None or is_disconnected(fresh):
+                    continue
+                connection = fresh
                 if connection.provider == "notion":
                     result = await sync_notion_connection(session, connection)
                 elif connection.provider == "jira":

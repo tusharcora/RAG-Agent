@@ -13,6 +13,7 @@ from app.core.crypto import decrypt_token
 from app.core.db import get_session
 from app.core.queue import publish_event
 from app.core.ratelimit import rate_limiter
+from app.integrations.connection_state import require_connected
 from app.integrations.jira_auth import ensure_fresh_token
 from app.models.rag import Document, OAuthConnection
 
@@ -86,6 +87,7 @@ async def sync_notion_connection(session: AsyncSession, connection: OAuthConnect
     it's all handled by the worker off the queue. Shared by the /notion route
     (single connection, resolved from the caller's auth) and auto_sync.py's
     periodic scheduler (every connection, no caller/auth involved)."""
+    require_connected(connection, "notion")
     try:
         access_token = decrypt_token(connection.access_token)
     except InvalidToken:
@@ -158,6 +160,7 @@ async def sync_jira_connection(session: AsyncSession, connection: OAuthConnectio
     """Enumerates issues via Jira's /search (JQL) and publishes one
     rag.jira_issue_updated event per issue. Shared by the /jira route and
     auto_sync.py's periodic scheduler — see sync_notion_connection above."""
+    require_connected(connection, "jira")
     access_token = await ensure_fresh_token(session, connection)
 
     published = 0

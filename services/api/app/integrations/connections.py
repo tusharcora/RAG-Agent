@@ -5,14 +5,32 @@ import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.crypto import encrypt_token
 from app.integrations.jira_auth import clear_needs_reconnect
-from app.models.rag import OAuthConnection
+from app.models.rag import Document, OAuthConnection
 
 logger = logging.getLogger(__name__)
+
+
+async def _reuse_row(session: AsyncSession, connection: OAuthConnection, new_workspace_id: str) -> None:
+    """Reconnecting reuses the org's existing row (UNIQUE(org_id, provider)) and
+    clears its disconnected marker. Documents it still holds (kept at disconnect,
+    or synced before a reconnect) stay only when the new workspace is the same one;
+    another workspace's pages/issues would otherwise sit beside the new ones and
+    never be updated or pruned, so they're deleted (chunks go by cascade)."""
+    if connection.workspace_id != new_workspace_id:
+        result = await session.execute(
+            delete(Document).where(Document.connection_id == connection.id).returning(Document.id)
+        )
+        removed = len(result.all())
+        if removed:
+            logger.info(
+                "Reconnected %s to a different workspace: removed %d old document(s)", connection.provider, removed
+            )
+    connection.disconnected_at = None
 
 
 async def save_notion_connection(session: AsyncSession, org_id: uuid.UUID, data: dict) -> OAuthConnection:
@@ -21,12 +39,15 @@ async def save_notion_connection(session: AsyncSession, org_id: uuid.UUID, data:
         select(OAuthConnection).where(OAuthConnection.provider == "notion", OAuthConnection.org_id == org_id)
     )
     connection = result.scalar_one_or_none()
+    workspace_id = data.get("workspace_id") or ""
     if connection is None:
         # UNIQUE(org_id, provider): reconnecting overwrites this org's prior connection.
         connection = OAuthConnection(id=uuid.uuid4(), org_id=org_id, provider="notion", access_token="")
         session.add(connection)
+    else:
+        await _reuse_row(session, connection, workspace_id)
 
-    connection.workspace_id = data.get("workspace_id", "")
+    connection.workspace_id = workspace_id
     connection.workspace_name = data.get("workspace_name") or "Notion workspace"
     connection.access_token = encrypt_token(data["access_token"])
     connection.bot_id = data.get("bot_id")
@@ -52,6 +73,8 @@ async def save_jira_connection(
     if connection is None:
         connection = OAuthConnection(id=uuid.uuid4(), org_id=org_id, provider="jira", access_token="")
         session.add(connection)
+    else:
+        await _reuse_row(session, connection, site["id"])
 
     connection.workspace_id = site["id"]  # Jira Cloud id, used in api.atlassian.com/ex/jira/{id}/... calls
     connection.workspace_name = site.get("name") or site["url"]
