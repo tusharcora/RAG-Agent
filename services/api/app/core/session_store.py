@@ -45,7 +45,17 @@ async def load_history(session: AsyncSession, org_id: uuid.UUID, user_id: uuid.U
 
 
 async def append_history(
-    session: AsyncSession, org_id: uuid.UUID, user_id: uuid.UUID, session_id: str, role: str, content: str
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    user_id: uuid.UUID,
+    session_id: str,
+    role: str,
+    content: str,
+    *,
+    sources: list[dict] | None = None,
+    cited_indices: list[int] | None = None,
+    model: str | None = None,
+    elapsed_ms: int | None = None,
 ) -> uuid.UUID:
     """Upserts the chat_sessions row (creating it on the first call for a new
     session_id) and inserts the message, in one commit. Called at the very
@@ -78,7 +88,18 @@ async def append_history(
     )
     await session.execute(upsert_stmt)
     message_id = uuid.uuid4()
-    session.add(ChatMessage(id=message_id, session_id=sid, role=role, content=content))
+    session.add(
+        ChatMessage(
+            id=message_id,
+            session_id=sid,
+            role=role,
+            content=content,
+            sources=sources,
+            cited_indices=cited_indices,
+            model=model,
+            elapsed_ms=elapsed_ms,
+        )
+    )
     await session.commit()
     return message_id
 
@@ -182,8 +203,29 @@ async def get_session_detail(
     if not await _owned_by(session, sid, org_id, user_id):
         return None
     rows = await session.execute(
-        select(ChatMessage.id, ChatMessage.role, ChatMessage.content, ChatMessage.feedback)
+        select(
+            ChatMessage.id,
+            ChatMessage.role,
+            ChatMessage.content,
+            ChatMessage.feedback,
+            ChatMessage.sources,
+            ChatMessage.cited_indices,
+            ChatMessage.model,
+            ChatMessage.elapsed_ms,
+        )
         .where(ChatMessage.session_id == sid)
         .order_by(ChatMessage.created_at)
     )
-    return [{"id": str(r.id), "role": r.role, "content": r.content, "feedback": r.feedback} for r in rows]
+    return [
+        {
+            "id": str(r.id),
+            "role": r.role,
+            "content": r.content,
+            "feedback": r.feedback,
+            "sources": r.sources,
+            "cited_indices": r.cited_indices,
+            "model": r.model,
+            "elapsed_ms": r.elapsed_ms,
+        }
+        for r in rows
+    ]

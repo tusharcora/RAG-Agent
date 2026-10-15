@@ -42,6 +42,11 @@ STATEMENTS = [
     WHERE provider <> 'gemini'
     ON CONFLICT (org_id, provider) DO NOTHING
     """,
+    # 012_message_sources.sql
+    "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS sources JSONB",
+    "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS cited_indices JSONB",
+    "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS model TEXT",
+    "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS elapsed_ms INTEGER",
 ]
 
 

@@ -103,7 +103,9 @@ async def query(
             # this turn at all — the fallback conversation existed in the
             # sidebar (via the user-turn append above) but replaying it via
             # GET /sessions/{id} would have shown only the question, no reply.
-            message_id = await append_history(session, auth.org_id, auth.user_id, session_id, "assistant", fallback)
+            message_id = await append_history(
+                session, auth.org_id, auth.user_id, session_id, "assistant", fallback, sources=[], cited_indices=[]
+            )
             yield _sse(
                 "done",
                 {
@@ -142,7 +144,19 @@ async def query(
 
         # User turn already recorded at the top of event_stream(); only the
         # assistant side is new here.
-        message_id = await append_history(session, auth.org_id, auth.user_id, session_id, "assistant", full_answer)
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        message_id = await append_history(
+            session,
+            auth.org_id,
+            auth.user_id,
+            session_id,
+            "assistant",
+            full_answer,
+            sources=sources,
+            cited_indices=cited_indices,
+            model=llm.label,
+            elapsed_ms=elapsed_ms,
+        )
 
         yield _sse(
             "done",
@@ -153,7 +167,7 @@ async def query(
                 "truncated": truncated,
                 "message_id": str(message_id),
                 "model": llm.label,
-                "elapsed_ms": int((time.monotonic() - started) * 1000),
+                "elapsed_ms": elapsed_ms,
             },
         )
 
