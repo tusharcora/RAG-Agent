@@ -1,10 +1,10 @@
-"""Shared check for a disconnected Notion/Jira connection (see
+"""Shared check for a disconnected Notion/Jira/GitHub connection (see
 POST /connections/{id}/disconnect). Kept dependency-free so sync.py,
 jira_auth.py and routes/connections.py can all import it without cycles."""
 
 from fastapi import HTTPException
 
-LABELS = {"notion": "Notion", "jira": "Jira"}
+LABELS = {"notion": "Notion", "jira": "Jira", "github": "GitHub"}
 
 
 def is_disconnected(connection) -> bool:

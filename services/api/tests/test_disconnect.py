@@ -219,10 +219,10 @@ def test_preview_refused_when_disconnected(client_for, pg_dsn):
 def test_disconnect_clears_jira_needs_reconnect(client_for, pg_dsn):
     client = client_for()
     conn_id = seed(pg_dsn, client.org_id, provider="jira")
-    jira_auth._NEEDS_RECONNECT.add(conn_id)
+    db_run(pg_dsn, "UPDATE oauth_connections SET needs_reconnect_at = now() WHERE id = $1", conn_id)
     assert status_of(client, "jira")["needs_reconnect"] is True
     client.post(f"/connections/{conn_id}/disconnect", json={"remove_documents": False})
-    assert not jira_auth.needs_reconnect(conn_id)
+    assert row(pg_dsn, conn_id)["needs_reconnect_at"] is None
     assert status_of(client, "jira")["needs_reconnect"] is False
 
 

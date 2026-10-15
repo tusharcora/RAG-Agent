@@ -83,6 +83,13 @@ class Settings(BaseSettings):
     jira_client_id: str = ""
     jira_client_secret: str = ""
 
+    # GitHub as a knowledge source, web (server) mode — same values as the api's copies; the worker
+    # refreshes the GitHub App's expiring user tokens itself before GitHub calls.
+    github_source_app_slug: str = ""
+    github_source_client_id: str = ""
+    github_source_client_secret: str = ""
+    github_api_url: str = "https://api.github.com"
+
     # Base64 Fernet key (cryptography.fernet.Fernet.generate_key()) encrypting
     # oauth_connections.access_token/refresh_token at rest — see app/core/crypto.py.
     # Must be byte-for-byte identical to services/api/app/core/config.py's copy;

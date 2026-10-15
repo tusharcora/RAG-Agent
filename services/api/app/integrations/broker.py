@@ -91,16 +91,15 @@ async def redeem(state: str, verifier: str, pickup: str) -> dict:
     raise BrokerExpired()
 
 
-async def refresh_jira(refresh_token: str) -> dict:
-    """{access_token, refresh_token, expires_in} from the Worker's /refresh/jira."""
+async def _refresh(purpose: str, refresh_token: str, refused: str) -> dict:
     try:
         async with _client(15.0) as client:
-            resp = await client.post(f"{_base()}/refresh/jira", json={"refresh_token": refresh_token})
+            resp = await client.post(f"{_base()}/refresh/{purpose}", json={"refresh_token": refresh_token})
     except httpx.HTTPError as exc:
         raise BrokerUnavailable() from exc
     if resp.status_code == 200:
         return _json(resp)
-    # Only a 400 means Atlassian refused the refresh token (reconnect needed). Anything else — 404 (an old or
+    # Only a 400 means the provider refused the refresh token (reconnect needed). Anything else — 404 (an old or
     # misconfigured Worker), 429, 5xx — is transient and must not tell the person to reconnect.
     if resp.status_code != 400:
         raise BrokerUnavailable()
@@ -108,4 +107,14 @@ async def refresh_jira(refresh_token: str) -> dict:
         message = resp.json().get("error")
     except (ValueError, AttributeError):
         message = None
-    raise BrokerRefused(str(message or "Jira refused the refresh. Reconnect Jira."))
+    raise BrokerRefused(str(message or refused))
+
+
+async def refresh_jira(refresh_token: str) -> dict:
+    """{access_token, refresh_token, expires_in} from the Worker's /refresh/jira."""
+    return await _refresh("jira", refresh_token, "Jira refused the refresh. Reconnect Jira.")
+
+
+async def refresh_github_repos(refresh_token: str) -> dict:
+    """{access_token, refresh_token, expires_in, refresh_token_expires_in} from the Worker's /refresh/github_repos."""
+    return await _refresh("github_repos", refresh_token, "GitHub refused the refresh. Reconnect GitHub.")

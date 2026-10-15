@@ -10,7 +10,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.crypto import encrypt_token
 from app.integrations.github_state import reset_github_state
-from app.integrations.jira_auth import clear_needs_reconnect
 from app.models.rag import Document, OAuthConnection
 
 logger = logging.getLogger(__name__)
@@ -33,6 +32,8 @@ async def _reuse_row(session: AsyncSession, connection: OAuthConnection, new_wor
                 "Reconnected %s to a different workspace: removed %d old document(s)", connection.provider, removed
             )
     connection.disconnected_at = None
+    # A fresh grant: whatever refresh token was refused is replaced.
+    connection.needs_reconnect_at = None
 
 
 async def save_notion_connection(session: AsyncSession, org_id: uuid.UUID, data: dict) -> OAuthConnection:
@@ -87,7 +88,6 @@ async def save_jira_connection(
     connection.bot_id = None
     connection.updated_at = now
     await session.commit()
-    clear_needs_reconnect(connection.id)
 
     logger.info("Jira connected: site=%s", connection.workspace_name)
     return connection

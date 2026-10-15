@@ -219,10 +219,7 @@ def test_finish_jira_saves_site(client_for, fake_broker, pg_dsn):
 
 
 def test_connections_reports_needs_reconnect_until_reconnected(make_client, fake_broker, pg_dsn):
-    import uuid
-
     from app.api.routes import connections as connections_routes
-    from app.integrations import jira_auth
 
     client = make_client(
         routers=[(connect_routes.router, "/connect"), (connections_routes.router, "/connections")],
@@ -238,7 +235,8 @@ def test_connections_reports_needs_reconnect_until_reconnected(make_client, fake
         return status
 
     assert jira_status()["needs_reconnect"] is False
-    jira_auth._NEEDS_RECONNECT.add(uuid.UUID(str(row["id"])))  # what a refused refresh records
+    # What a refused refresh records.
+    db_run(pg_dsn, "UPDATE oauth_connections SET needs_reconnect_at = now() WHERE id = $1", row["id"])
     assert jira_status()["needs_reconnect"] is True
     # Reconnecting (a fresh Connect flow) clears it.
     state = _start(client, fake_broker, "jira", JIRA_RESULT)

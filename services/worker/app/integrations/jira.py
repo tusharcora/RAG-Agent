@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 JIRA_TOKEN_URL = "https://auth.atlassian.com/oauth/token"
 JIRA_API_BASE = "https://api.atlassian.com/ex/jira"
+RECONNECT = "Jira needs reconnecting. Use Reconnect on the Connections page."
 
 
 class JiraRateLimited(Exception):
@@ -58,6 +59,18 @@ def _adf_to_text(adf: dict | None) -> str:
     return "".join(parts).strip()
 
 
+async def _mark_needs_reconnect(connection_id) -> None:
+    """Persists the sign-in Worker's refusal (oauth_connections.needs_reconnect_at) so GET /connections shows
+    Reconnect. Same lock-and-reread as the token write: a row disconnected meanwhile is left alone."""
+    async with get_session() as session:
+        db_connection = await session.get(
+            OAuthConnection, connection_id, with_for_update=True, populate_existing=True
+        )
+        if db_connection is not None and getattr(db_connection, "disconnected_at", None) is None:
+            db_connection.needs_reconnect_at = datetime.now(timezone.utc)
+            await session.commit()
+
+
 async def _ensure_fresh_token(connection: OAuthConnection) -> str:
     """Jira access tokens expire (~1h). Refreshes via Atlassian's
     refresh_token grant if expired or about to expire, persisting the
@@ -94,7 +107,8 @@ async def _ensure_fresh_token(connection: OAuthConnection) -> str:
             data = await broker.refresh_jira(refresh_token)
         except broker.BrokerRefused:
             # BrokerUnavailable propagates: the event retries, then dead-letters.
-            raise RuntimeError("Jira needs reconnecting. Use Reconnect on the Connections page.")
+            await _mark_needs_reconnect(connection.id)
+            raise RuntimeError(RECONNECT)
     else:
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
@@ -114,12 +128,17 @@ async def _ensure_fresh_token(connection: OAuthConnection) -> str:
     new_expires_at = now + timedelta(seconds=data.get("expires_in", 3600))
 
     async with get_session() as session:
-        db_connection = await session.get(OAuthConnection, connection.id)
-        # Disconnected while this refresh was in flight: don't write tokens back onto a wiped row.
-        if getattr(db_connection, "disconnected_at", None) is None:
+        # Lock and re-read: a disconnect committed while this refresh was in flight must not get tokens
+        # written back onto its wiped row, and one arriving now waits for this commit, then wipes it.
+        db_connection = await session.get(
+            OAuthConnection, connection.id, with_for_update=True, populate_existing=True
+        )
+        if db_connection is not None and getattr(db_connection, "disconnected_at", None) is None:
             db_connection.access_token = encrypt_token(new_access_token)
             db_connection.refresh_token = encrypt_token(new_refresh_token)
             db_connection.expires_at = new_expires_at
+            # Any successful refresh clears the persisted needs-reconnect flag.
+            db_connection.needs_reconnect_at = None
             await session.commit()
 
     # Keep the in-memory connection's fields ciphertext, matching the DB — every

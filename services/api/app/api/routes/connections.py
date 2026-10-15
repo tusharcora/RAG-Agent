@@ -16,13 +16,13 @@ from app.core.db import get_session
 from app.integrations.connection_state import require_connected
 from app.integrations.connections import save_notion_connection
 from app.integrations.github_state import reset_github_state
-from app.integrations.jira_auth import clear_needs_reconnect, ensure_fresh_token, needs_reconnect
+from app.integrations.jira_auth import ensure_fresh_token
 from app.models.event_log import EventLog
 from app.models.rag import ConnectionMember, Document, OAuthConnection
 
 router = APIRouter(dependencies=[Depends(require_auth)])
 
-PROVIDERS = ("notion", "jira")
+PROVIDERS = ("notion", "jira", "github")
 
 
 class ConnectionStatus(BaseModel):
@@ -35,7 +35,8 @@ class ConnectionStatus(BaseModel):
     visibility_mode: str | None
     dead_lettered_count_24h: int
     last_sync_status: str | None  # most recent event_log row's status for this connection, or None if it has never synced
-    # Desktop: the sign-in Worker refused this Jira connection's refresh token (see jira_auth._NEEDS_RECONNECT).
+    # The provider refused this connection's refresh token (oauth_connections.needs_reconnect_at, set by the
+    # Jira/GitHub refresh paths; cleared by a successful refresh, a reconnect, or Disconnect).
     needs_reconnect: bool = False
     # Disconnected (POST /{id}/disconnect): connected is False, the row and id remain, and
     # document_count says how many documents were kept (still searchable, never updated).
@@ -113,7 +114,7 @@ async def connections(
                 visibility_mode=conn.visibility_mode,
                 dead_lettered_count_24h=dead_lettered_count_24h,
                 last_sync_status=last_sync_status,
-                needs_reconnect=needs_reconnect(conn.id),
+                needs_reconnect=conn.needs_reconnect_at is not None,
                 document_count=document_count,
             )
         )
@@ -194,11 +195,11 @@ async def disconnect(
     connection.access_token = None
     connection.refresh_token = None
     connection.expires_at = None
+    connection.needs_reconnect_at = None
     if connection.disconnected_at is None:
         connection.disconnected_at = datetime.now(timezone.utc)
     connection.updated_at = datetime.now(timezone.utc)
     await session.commit()
-    clear_needs_reconnect(connection.id)
     return {"disconnected": True, "removed": removed}
 
 

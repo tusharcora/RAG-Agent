@@ -128,5 +128,15 @@ class Settings(BaseSettings):
     github_oauth_client_secret: str = ""
     github_oauth_redirect_uri: str = "http://localhost:8000/auth/github/callback"
 
+    # GitHub as a knowledge source, web (server) mode: the GitHub App's OAuth credentials, used to connect
+    # and to refresh its expiring user tokens. Desktop uses the sign-in Worker's GITHUB_APP_* instead.
+    # Not GITHUB_OAUTH_* above (social login) nor GITHUB_APP_ID (code review bot placeholder).
+    github_source_app_slug: str = ""
+    github_source_client_id: str = ""
+    github_source_client_secret: str = ""
+    github_source_redirect_uri: str = ""
+    # Every GitHub REST call goes through this base, so tests and the e2e can point it at a fake.
+    github_api_url: str = "https://api.github.com"
+
 
 settings = Settings()
