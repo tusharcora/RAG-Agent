@@ -4,9 +4,10 @@ import { useCallback, useEffect, useState } from "react";
 import { getEvents } from "@/lib/api";
 import { useInterval } from "@/hooks/useInterval";
 import { useAuth } from "@/lib/auth-context";
+import { PageHeader } from "@/components/PageHeader";
 import { EventTable } from "@/components/activity/EventTable";
 import { DlqPanel } from "@/components/activity/DlqPanel";
-import { StatTile } from "@/components/StatTile";
+
 import { TableCard } from "@/components/application/table/table";
 import { NativeSelect } from "@/components/base/select/select-native";
 import { TableRowsSkeleton } from "@/components/base/skeleton/skeleton";
@@ -38,18 +39,17 @@ export default function ActivityPage() {
   const failed = events.filter((e) => e.status === "failed" || e.status === "dead_lettered").length;
 
   return (
-    <div className="mx-auto max-w-5xl px-6 py-8">
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="mb-1 text-xl font-semibold text-ink-100">Activity</h1>
-          <p className="text-sm text-ink-500">Live feed of sync/embed events from the shared event_log table.</p>
-        </div>
-      </div>
+    <div className="mx-auto flex max-w-[1240px] flex-col gap-8 px-6 py-10 md:px-14">
+      <PageHeader
+        eyebrow="LIVE FEED · REFRESHES EVERY 5S"
+        title="Activity"
+        description="Sync and embed events as the worker processes them."
+      />
 
-      <div className="mb-4 flex flex-wrap gap-3">
-        <StatTile label="events" value={events.length} accent="gold" />
-        <StatTile label="succeeded" value={succeeded} accent="coral" />
-        <StatTile label="failed / dead-lettered" value={failed} accent="coral" />
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <BigNumber value={events.length} label="recent events" />
+        <BigNumber value={succeeded} label="succeeded" />
+        <BigNumber value={failed} label="failed or dead-lettered" alert={failed > 0} />
       </div>
 
       <TableCard.Root>
@@ -72,6 +72,15 @@ export default function ActivityPage() {
       </TableCard.Root>
 
       {isAdmin && <DlqPanel />}
+    </div>
+  );
+}
+
+function BigNumber({ value, label, alert }: { value: number; label: string; alert?: boolean }) {
+  return (
+    <div className="flex flex-col gap-1.5 rounded-[20px] border border-ink-800 bg-ink-900 px-6 py-5">
+      <span className={`font-serif text-[48px] leading-none ${alert ? "text-error-primary" : "text-ink-100"}`}>{value}</span>
+      <span className="text-[13px] text-ink-400">{label}</span>
     </div>
   );
 }

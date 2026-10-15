@@ -119,7 +119,7 @@ export function DocumentDetailDrawer({
           {detail.chunks.map((chunk) => {
             const isExpanded = expandedChunks.has(chunk.id);
             return (
-              <div key={chunk.id} className="cyber-chamfer-sm rounded-xl border border-ink-800 bg-ink-950/60 p-3">
+              <div key={chunk.id} className="rounded-xl border border-ink-800 bg-ink-950/60 p-3">
                 <div className="mb-2 flex flex-wrap items-center gap-1.5">
                   <Badge type="color" color="gray" size="sm" className="font-mono">
                     #{chunk.chunk_index}
@@ -151,7 +151,7 @@ export function DocumentDetailDrawer({
                 <button
                   type="button"
                   onClick={() => toggleExpanded(chunk.id)}
-                  className="mt-1 text-xs text-coral-400 hover:text-coral-300"
+                  className="mt-1 text-xs text-ink-100 underline underline-offset-2 hover:text-ink-300"
                 >
                   {isExpanded ? "Show less" : "Show more"}
                 </button>

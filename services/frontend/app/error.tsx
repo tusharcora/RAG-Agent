@@ -10,7 +10,7 @@ export default function ErrorBoundary({ error, reset }: { error: Error & { diges
   }, [error]);
 
   return (
-    <div className="flex h-[calc(100vh-57px)] items-center justify-center px-6">
+    <div className="flex h-screen items-center justify-center px-6">
       <div className="text-center">
         <ErrorState
           title="This page hit an unexpected error"

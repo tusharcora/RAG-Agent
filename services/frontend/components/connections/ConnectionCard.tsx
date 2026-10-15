@@ -25,9 +25,14 @@ export function ConnectionCard({
   status,
   onSynced,
   isPolling,
+  docCount,
+  runs,
 }: {
   status: ConnectionStatus;
   onSynced: () => void;
+  docCount?: number;
+  // Statuses of this provider's most recent sync events, oldest first.
+  runs?: string[];
   // True during the 3s-for-30s fast poll app/connections/page.tsx runs right
   // after a manual sync — shown as a pulse badge so the wait has a visible
   // "still working" signal without needing a dedicated push channel.
@@ -80,58 +85,73 @@ export function ConnectionCard({
     }
   };
 
+  const healthy = status.last_sync_status !== "failed" && status.last_sync_status !== "dead_lettered";
+  const statusLabel = !status.connected
+    ? "NOT CONNECTED"
+    : !healthy
+      ? "LAST SYNC FAILED"
+      : status.dead_lettered_count_24h > 0
+        ? `${status.dead_lettered_count_24h} FAILED ITEM${status.dead_lettered_count_24h === 1 ? "" : "S"}`
+        : "HEALTHY";
+  const statusTone = !status.connected ? "text-ink-500" : healthy && status.dead_lettered_count_24h === 0 ? "text-success-primary" : "text-error-primary";
+
   return (
-    <div className="cyber-chamfer rounded-2xl border border-ink-800 bg-ink-900/60 p-5 shadow-panel transition hover:border-ink-700">
-      <div className="mb-4 flex items-center gap-2.5">
-        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-ink-800 text-ink-200">
-          <SourceIcon source={status.provider} className="h-4.5 w-4.5" />
+    <section className="flex min-w-0 flex-col gap-[22px] rounded-[20px] border border-ink-800 bg-ink-900 p-6">
+      <div className="flex items-center justify-between gap-3">
+        <span className="flex items-center gap-2.5 text-[17px] font-semibold text-ink-100">
+          <SourceIcon source={status.provider} className="h-[18px] w-[18px]" />
+          {LABELS[status.provider] ?? status.provider}
+          {status.workspace_name && <span className="truncate text-sm font-normal text-ink-500">· {status.workspace_name}</span>}
         </span>
-        <h2 className="text-base font-semibold text-ink-100">{LABELS[status.provider] ?? status.provider}</h2>
-        <Badge type="pill-color" color={status.connected ? "success" : "gray"} size="sm" className="ml-auto">
-          {status.connected ? "Connected" : "Not connected"}
-        </Badge>
+        <span className={`shrink-0 font-mono text-[11px] tracking-[0.06em] ${statusTone}`}>{statusLabel}</span>
       </div>
 
       {status.connected ? (
-        <div className="space-y-1.5 text-sm">
-          <Row label="Workspace" value={status.workspace_name ?? "—"} />
-          <Row label="Last synced" value={formatTimestamp(status.last_synced_at)} highlighted={justUpdated} />
-          <Row label="Visibility" value={status.visibility_mode === "restricted" ? "Restricted" : "Org-wide"} />
-          {status.last_sync_status === "dead_lettered" && (
-            // Distinct from the 24h-count badge below: this means the *most recent*
-            // sync attempt gave up after exhausting retries, i.e. still broken right
-            // now — not just "had a blip earlier today that's since recovered."
-            <div className="flex items-center justify-between gap-4">
-              <span className="text-ink-500">Sync status</span>
-              <Badge type="pill-color" color="error" size="sm">
-                Last sync failed
-              </Badge>
+        <>
+          <div className="grid grid-cols-3 gap-4">
+            <BigStat value={docCount === undefined ? "—" : docCount.toLocaleString()} label={status.provider === "jira" ? "issues" : "pages"} />
+            <BigStat value={preview ? `${preview.visible_count}${preview.truncated ? "+" : ""}` : "—"} label="visible to integration" />
+            <BigStat value={shortAgo(status.last_synced_at)} label="since last sync" highlighted={justUpdated} />
+          </div>
+
+          {runs && runs.length > 0 && (
+            <div className="flex flex-col gap-2">
+              <div className="flex h-9 items-end gap-[3px]" aria-label="Recent sync events">
+                {runs.map((r, i) => (
+                  <div
+                    key={i}
+                    title={r}
+                    className={`flex-1 rounded-[3px] ${
+                      r === "succeeded"
+                        ? "h-full bg-ink-100"
+                        : r === "failed" || r === "dead_lettered"
+                          ? "h-full bg-error-solid"
+                          : "h-1/2 bg-ink-700"
+                    }`}
+                  />
+                ))}
+              </div>
+              <div className="flex justify-between font-mono text-[11px] text-ink-500">
+                <span>older</span>
+                <span>recent sync events</span>
+                <span>now</span>
+              </div>
             </div>
           )}
-          {status.dead_lettered_count_24h > 0 && (
-            <div className="flex items-center justify-between gap-4">
-              <span className="text-ink-500">Reliability</span>
-              <Badge type="pill-color" color="warning" size="sm">
-                {status.dead_lettered_count_24h} failed in last 24h
-              </Badge>
-            </div>
-          )}
-          {preview && (
-            <div className="flex items-center justify-between gap-4">
-              <span className="text-ink-500">Visible to integration</span>
-              <Badge type="pill-color" color={preview.visible_count === 0 ? "warning" : "gray"} size="sm">
-                {preview.visible_count === 0
-                  ? "0 pages shared — check permissions"
-                  : `${preview.visible_count}${preview.truncated ? "+" : ""} page${preview.visible_count === 1 ? "" : "s"}`}
-              </Badge>
-            </div>
-          )}
-        </div>
+
+          <div className="space-y-1.5 border-t border-ink-800 pt-4 text-sm">
+            <Row label="Last synced" value={formatTimestamp(status.last_synced_at)} highlighted={justUpdated} />
+            <Row label="Visibility" value={status.visibility_mode === "restricted" ? "Restricted" : "Org-wide"} />
+            {preview && preview.visible_count === 0 && (
+              <Row label="Permissions" value="0 pages shared — check the integration's access" />
+            )}
+          </div>
+        </>
       ) : (
-        <p className="text-sm text-ink-500">Connect to start syncing content for retrieval.</p>
+        <p className="text-sm text-ink-400">Connect to start syncing content for retrieval.</p>
       )}
 
-      <div className="mt-4 flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         {status.connected ? (
           <>
             <Button color="secondary" size="sm" isLoading={syncing} onPress={handleSync}>
@@ -151,8 +171,32 @@ export function ConnectionCard({
       </div>
 
       {status.connected && isAdmin && status.id && <AccessControl connectionId={status.id} status={status} />}
+    </section>
+  );
+}
+
+function BigStat({ value, label, highlighted }: { value: string; label: string; highlighted?: boolean }) {
+  return (
+    <div className="flex min-w-0 flex-col gap-1">
+      <span
+        className={`truncate font-serif text-[40px] leading-none transition-colors duration-1000 ${
+          highlighted ? "hl text-ink-100" : "text-ink-100"
+        }`}
+      >
+        {value}
+      </span>
+      <span className="text-xs text-ink-400">{label}</span>
     </div>
   );
+}
+
+function shortAgo(value: string | null): string {
+  if (!value) return "—";
+  const min = Math.max(0, Math.round((Date.now() - new Date(value).getTime()) / 60000));
+  if (min < 60) return `${min}m`;
+  const h = Math.round(min / 60);
+  if (h < 48) return `${h}h`;
+  return `${Math.round(h / 24)}d`;
 }
 
 function AccessControl({ connectionId, status }: { connectionId: string; status: ConnectionStatus }) {
@@ -208,7 +252,7 @@ function AccessControl({ connectionId, status }: { connectionId: string; status:
   }
 
   return (
-    <div className="mt-4 border-t border-ink-800 pt-4">
+    <div className="border-t border-ink-800 pt-4">
       <Button color="link-color" size="sm" onPress={() => setExpanded((v) => !v)}>
         {expanded ? "Hide access settings" : "Manage access"}
       </Button>
@@ -221,7 +265,7 @@ function AccessControl({ connectionId, status }: { connectionId: string; status:
               disabled={saving}
               onClick={() => handleModeChange("org_wide")}
               className={`rounded-full px-2.5 py-1 transition ${
-                mode === "org_wide" ? "bg-coral-500 text-white" : "text-ink-400 hover:text-ink-200"
+                mode === "org_wide" ? "bg-ink-100 text-ink-950" : "text-ink-400 hover:text-ink-200"
               }`}
             >
               Org-wide
@@ -231,7 +275,7 @@ function AccessControl({ connectionId, status }: { connectionId: string; status:
               disabled={saving}
               onClick={() => handleModeChange("restricted")}
               className={`rounded-full px-2.5 py-1 transition ${
-                mode === "restricted" ? "bg-coral-500 text-white" : "text-ink-400 hover:text-ink-200"
+                mode === "restricted" ? "bg-ink-100 text-ink-950" : "text-ink-400 hover:text-ink-200"
               }`}
             >
               Restricted
@@ -256,7 +300,7 @@ function AccessControl({ connectionId, status }: { connectionId: string; status:
                       type="checkbox"
                       checked={selected.has(m.user_id)}
                       onChange={() => toggleMember(m.user_id)}
-                      className="accent-coral-500"
+                      className="accent-ink-100"
                     />
                     {m.display_name || m.email}
                   </label>
@@ -283,7 +327,7 @@ function Row({ label, value, highlighted }: { label: string; value: string; high
       <span className="text-ink-500">{label}</span>
       <span
         className={`-mx-1 truncate rounded px-1 transition-colors duration-1000 ${
-          highlighted ? "bg-gold-400/20 text-gold-200" : "text-ink-300"
+          highlighted ? "bg-accent text-accent-ink" : "text-ink-300"
         }`}
       >
         {value}

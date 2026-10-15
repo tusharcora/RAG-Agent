@@ -62,7 +62,7 @@ export function EventTable({ events }: { events: EventLogEntry[] }) {
       </Table.Header>
       <Table.Body items={sorted}>
         {(e) => (
-          <Table.Row id={e.id} className={`transition-colors duration-1000 ${newIds.has(e.id) ? "bg-gold-400/10" : ""}`}>
+          <Table.Row id={e.id} className={`transition-colors duration-1000 ${newIds.has(e.id) ? "bg-accent/20" : ""}`}>
             <Table.Cell className="whitespace-nowrap">{new Date(e.created_at).toLocaleTimeString()}</Table.Cell>
             <Table.Cell className="font-mono text-xs whitespace-nowrap">{e.routing_key}</Table.Cell>
             <Table.Cell>

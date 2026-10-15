@@ -14,9 +14,13 @@ import type {
   SessionDetail,
   SessionSummary,
   VoyageUsage,
+  LlmSettings,
+  LlmSettingsInput,
+  LlmTestResult,
 } from "./types";
 
-export const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+// Defaults to the same-origin /api proxy defined in next.config.js.
+export const API_BASE = process.env.NEXT_PUBLIC_API_URL || "/api";
 
 // No API key header anymore — auth is the httpOnly `session` cookie set by
 // POST /auth/login, sent automatically via `credentials: "include"` below.
@@ -28,14 +32,26 @@ function buildHeaders(): HeadersInit {
 }
 
 export class ApiError extends Error {
-  constructor(public status: number, message: string) {
+  constructor(public status: number, message: string, public detail?: string) {
     super(message);
   }
 }
 
+// Reads FastAPI's {"detail": "..."} so callers can show the server's reason.
+async function apiError(res: Response, label: string): Promise<ApiError> {
+  let detail: string | undefined;
+  try {
+    const body = await res.json();
+    if (typeof body?.detail === "string") detail = body.detail;
+  } catch {
+    // not JSON
+  }
+  return new ApiError(res.status, `${label} failed: ${res.status}`, detail);
+}
+
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, { headers: buildHeaders(), cache: "no-store", credentials: "include" });
-  if (!res.ok) throw new ApiError(res.status, `GET ${path} failed: ${res.status}`);
+  if (!res.ok) throw await apiError(res, `GET ${path}`);
   return res.json();
 }
 
@@ -46,7 +62,7 @@ async function post<T>(path: string, body?: unknown): Promise<T> {
     body: body ? JSON.stringify(body) : undefined,
     credentials: "include",
   });
-  if (!res.ok) throw new ApiError(res.status, `POST ${path} failed: ${res.status}`);
+  if (!res.ok) throw await apiError(res, `POST ${path}`);
   if (res.status === 204) return undefined as T;
   return res.json();
 }
@@ -58,7 +74,7 @@ async function patch<T>(path: string, body?: unknown): Promise<T> {
     body: body ? JSON.stringify(body) : undefined,
     credentials: "include",
   });
-  if (!res.ok) throw new ApiError(res.status, `PATCH ${path} failed: ${res.status}`);
+  if (!res.ok) throw await apiError(res, `PATCH ${path}`);
   return res.json();
 }
 
@@ -69,14 +85,14 @@ async function put<T>(path: string, body?: unknown): Promise<T> {
     body: body ? JSON.stringify(body) : undefined,
     credentials: "include",
   });
-  if (!res.ok) throw new ApiError(res.status, `PUT ${path} failed: ${res.status}`);
+  if (!res.ok) throw await apiError(res, `PUT ${path}`);
   if (res.status === 204) return undefined as T;
   return res.json();
 }
 
 async function del<T>(path: string): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, { method: "DELETE", headers: buildHeaders(), credentials: "include" });
-  if (!res.ok) throw new ApiError(res.status, `DELETE ${path} failed: ${res.status}`);
+  if (!res.ok) throw await apiError(res, `DELETE ${path}`);
   if (res.status === 204) return undefined as T;
   return res.json();
 }
@@ -201,4 +217,20 @@ export function getSession(id: string) {
 
 export function setMessageFeedback(sessionId: string, messageId: string, feedback: "up" | "down" | null) {
   return post<void>(`/sessions/${sessionId}/messages/${messageId}/feedback`, { feedback });
+}
+
+export function getLlmSettings() {
+  return get<LlmSettings>("/settings/llm");
+}
+
+export function saveLlmSettings(body: LlmSettingsInput) {
+  return put<LlmSettings>("/settings/llm", body);
+}
+
+export function deleteLlmKey(provider: "anthropic" | "openai" | "local") {
+  return del<LlmSettings>(`/settings/llm/keys/${provider}`);
+}
+
+export function testLlmSettings(body: LlmSettingsInput) {
+  return post<LlmTestResult>("/settings/llm/test", body);
 }

@@ -8,8 +8,8 @@ import { cx } from "@/utils/cx";
 
 const VARIANT_ICON: Record<ToastContent["variant"], { icon: typeof CheckCircle; className: string }> = {
   success: { icon: CheckCircle, className: "text-status-succeeded" },
-  error: { icon: AlertCircle, className: "text-coral-400" },
-  info: { icon: InfoCircle, className: "text-gold-400" },
+  error: { icon: AlertCircle, className: "text-error-primary" },
+  info: { icon: InfoCircle, className: "text-ink-300" },
 };
 
 /**
@@ -29,7 +29,7 @@ function ToastItem({ toast: queuedToast }: { toast: QueuedToast<ToastContent> })
   return (
     <Toast
       toast={queuedToast}
-      className="cyber-chamfer-sm flex w-80 animate-in items-start gap-2.5 rounded-xl border border-ink-800 bg-ink-900 p-3 shadow-panel outline-none duration-200 ease-out fade-in slide-in-from-bottom-2"
+      className="flex w-80 animate-in items-start gap-2.5 rounded-xl border border-ink-800 bg-ink-900 p-3 shadow-panel outline-none duration-200 ease-out fade-in slide-in-from-bottom-2"
     >
       <Icon className={cx("mt-0.5 h-4 w-4 shrink-0", className)} />
       <div className="min-w-0 flex-1">
