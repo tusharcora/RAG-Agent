@@ -1,35 +1,49 @@
 import type { Selection } from "react-aria-components";
+import { FileSearch02 } from "@untitledui/icons";
 import { SourceIcon } from "@/components/icons/SourceIcon";
 import { Table } from "@/components/application/table/table";
 import { Badge } from "@/components/base/badges/badges";
+import { EmptyState } from "@/components/base/empty-state/empty-state";
 import type { DocumentSummary } from "@/lib/types";
 
 export function DocumentTable({
   documents,
-  selectedId,
-  onSelect,
+  selectedIds,
+  onSelectionChange,
+  onOpen,
 }: {
   documents: DocumentSummary[];
-  selectedId: string | null;
-  onSelect: (id: string) => void;
+  // Checkbox selection for bulk actions — independent of which document is
+  // open in the detail drawer (see onOpen), which used to be the same state.
+  selectedIds: Set<string>;
+  onSelectionChange: (ids: Set<string>) => void;
+  onOpen: (id: string) => void;
 }) {
   if (documents.length === 0) {
-    return <p className="px-1 py-8 text-center text-sm text-ink-500">No documents match this filter.</p>;
+    return (
+      <EmptyState
+        icon={FileSearch02}
+        title="No documents match this filter"
+        description="Try a different search, or connect a source from the Connections page to start syncing content."
+      />
+    );
   }
 
   const handleSelectionChange = (keys: Selection) => {
-    if (keys === "all") return;
-    const [id] = Array.from(keys);
-    if (id) onSelect(String(id));
+    if (keys === "all") {
+      onSelectionChange(new Set(documents.map((d) => d.id)));
+      return;
+    }
+    onSelectionChange(new Set(Array.from(keys, String)));
   };
 
   return (
     <Table
       aria-label="Synced documents"
-      selectionMode="single"
-      selectionBehavior="replace"
-      selectedKeys={selectedId ? new Set([selectedId]) : new Set()}
+      selectionMode="multiple"
+      selectedKeys={selectedIds}
       onSelectionChange={handleSelectionChange}
+      onRowAction={(key) => onOpen(String(key))}
     >
       <Table.Header>
         <Table.Head id="title" label="Title" isRowHeader className="w-full" />

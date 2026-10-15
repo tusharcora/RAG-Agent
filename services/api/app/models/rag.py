@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Boolean, ForeignKey, Integer, Text, TIMESTAMP, UniqueConstraint, func
+from sqlalchemy import Boolean, Computed, ForeignKey, Integer, Text, TIMESTAMP, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -172,7 +172,15 @@ class Document(Base):
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
     # GENERATED ALWAYS AS ... STORED in infra/postgres/005_document_search.sql —
     # Postgres computes this from `title`, the app never writes it directly.
-    search_vector: Mapped[str | None] = mapped_column(TSVECTOR, nullable=True)
+    # Computed(persisted=True) here matters, not just documentation: without
+    # it SQLAlchemy still sends this column in every INSERT (as NULL, since
+    # nothing ever assigns it), and Postgres hard-rejects any explicit value
+    # — even NULL — into a GENERATED ALWAYS column with GeneratedAlwaysError.
+    # Computed() tells the ORM this column is server-managed and to omit it
+    # from INSERT/UPDATE entirely.
+    search_vector: Mapped[str | None] = mapped_column(
+        TSVECTOR, Computed("to_tsvector('english', title)", persisted=True), nullable=True
+    )
     # infra/postgres/008_document_exclude.sql. A document-level kill switch on
     # top of OAuthConnection.visibility_mode — lets an owner/admin stop one
     # stale/wrong document from being cited without disconnecting the whole
@@ -237,8 +245,57 @@ class ChatMessage(Base):
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
     # GENERATED ALWAYS AS ... STORED in infra/postgres/009_chat_search.sql —
     # Postgres computes this from `content`, the app never writes it directly.
-    search_vector: Mapped[str | None] = mapped_column(TSVECTOR, nullable=True)
+    # Computed(persisted=True) matters, not just documentation — see the
+    # identical comment on Document.search_vector above for why: without it
+    # every new message insert failed with GeneratedAlwaysError, since
+    # SQLAlchemy sent this column as an explicit NULL on every INSERT.
+    search_vector: Mapped[str | None] = mapped_column(
+        TSVECTOR, Computed("to_tsvector('english', content)", persisted=True), nullable=True
+    )
     # Mirrors infra/postgres/007_message_feedback.sql. Null = no feedback
     # given; only ever set on assistant messages, but nothing in this model
     # enforces that — see the migration's comment.
     feedback: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # infra/postgres/012_message_sources.sql — assistant answers only: the
+    # retrieved sources (as sent in the `sources` SSE event), which [n] were
+    # cited, and which model wrote it. Replayed by GET /sessions/{id}.
+    sources: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    cited_indices: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    elapsed_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class OrgLlmSettings(Base):
+    """Which model writes this org's chat answers. One row per org; no row
+    means the server default (Gemini). api_key_encrypted uses the same Fernet
+    encryption as oauth_connections tokens (core/crypto.py)."""
+
+    __tablename__ = "org_llm_settings"
+
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True
+    )
+    provider: Mapped[str] = mapped_column(Text, nullable=False, default="gemini")
+    model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    base_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    api_key_hint: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class OrgLlmCredential(Base):
+    """Per-provider saved credentials and choices for an org. Kept for every
+    provider an admin has configured, so switching the active provider in
+    org_llm_settings never discards another provider's key."""
+
+    __tablename__ = "org_llm_credentials"
+
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True
+    )
+    provider: Mapped[str] = mapped_column(Text, primary_key=True)
+    model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    base_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    api_key_hint: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())

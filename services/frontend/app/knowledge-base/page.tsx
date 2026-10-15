@@ -2,14 +2,17 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { SearchLg } from "@untitledui/icons";
-import { getDocuments } from "@/lib/api";
+import { getDocuments, setDocumentExcluded } from "@/lib/api";
+import { useAuth } from "@/lib/auth-context";
+import { toast } from "@/lib/toast";
 import { DocumentTable } from "@/components/knowledge-base/DocumentTable";
 import { DocumentDetailDrawer } from "@/components/knowledge-base/DocumentDetailDrawer";
-import { StatTile } from "@/components/StatTile";
+import { PageHeader } from "@/components/PageHeader";
 import { TableCard } from "@/components/application/table/table";
 import { Input } from "@/components/base/input/input";
 import { NativeSelect } from "@/components/base/select/select-native";
 import { Button } from "@/components/base/buttons/button";
+import { TableRowsSkeleton } from "@/components/base/skeleton/skeleton";
 import type { DocumentSummary } from "@/lib/types";
 
 const PAGE_SIZE = 25;
@@ -24,30 +27,69 @@ export default function KnowledgeBasePage() {
   const [documents, setDocuments] = useState<DocumentSummary[]>([]);
   const [total, setTotal] = useState(0);
   const [search, setSearch] = useState("");
+  // Debounced separately from `search` so typing doesn't fire a request per
+  // keystroke — same 300ms pattern as SessionSidebar.tsx's session search.
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [source, setSource] = useState<string>("");
   const [offset, setOffset] = useState(0);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [openId, setOpenId] = useState<string | null>(null);
+  // Checkbox selection for bulk actions, independent of openId (which document
+  // is showing in the detail drawer).
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkExcluding, setBulkExcluding] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const { user } = useAuth();
+  const isAdmin = user?.role === "owner" || user?.role === "admin";
+
+  useEffect(() => {
+    const id = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(id);
+  }, [search]);
 
   const refresh = useCallback(() => {
-    getDocuments({ search: search || undefined, source: source || undefined, limit: PAGE_SIZE, offset })
+    getDocuments({ search: debouncedSearch || undefined, source: source || undefined, limit: PAGE_SIZE, offset })
       .then((res) => {
         setDocuments(res.items);
         setTotal(res.total);
+        setLoaded(true);
+        // Selection can't outlive the page it was made on — drop anything
+        // that scrolled out of view after a refetch.
+        setSelectedIds((prev) => new Set([...prev].filter((id) => res.items.some((d) => d.id === id))));
       })
       .catch(() => {});
-  }, [search, source, offset]);
+  }, [debouncedSearch, source, offset]);
 
   useEffect(refresh, [refresh]);
 
-  return (
-    <div className="mx-auto flex h-[calc(100vh-57px)] max-w-none">
-      <div className="flex min-w-0 flex-1 flex-col px-6 py-6">
-        <h1 className="mb-1 text-xl font-semibold text-ink-100">Knowledge Base</h1>
-        <p className="mb-4 text-sm text-ink-500">Everything ingested from Notion and Jira, and what it chunks into.</p>
+  async function handleBulkExclude() {
+    setBulkExcluding(true);
+    const ids = Array.from(selectedIds);
+    const results = await Promise.allSettled(ids.map((id) => setDocumentExcluded(id, true)));
+    const succeeded = new Set(ids.filter((_, i) => results[i].status === "fulfilled"));
+    setDocuments((prev) => prev.map((d) => (succeeded.has(d.id) ? { ...d, excluded_from_retrieval: true } : d)));
+    setSelectedIds(new Set());
+    setBulkExcluding(false);
+    if (succeeded.size === ids.length) {
+      toast.success(`Excluded ${succeeded.size} document${succeeded.size === 1 ? "" : "s"}`);
+    } else {
+      toast.error(`Excluded ${succeeded.size} of ${ids.length}`, "Some documents couldn't be updated — try again.");
+    }
+  }
 
-        <div className="mb-4 flex items-center gap-3 text-xs text-ink-500">
-          <StatTile label="Documents" value={total} />
-        </div>
+  return (
+    <div className="mx-auto flex h-screen max-w-none">
+      <div className="flex min-w-0 flex-1 flex-col gap-8 px-6 py-10 md:px-14">
+        <PageHeader
+          eyebrow="KNOWLEDGE BASE"
+          title="Everything we've read"
+          description="Everything ingested from Notion and Jira, and what it chunks into."
+          trailing={
+            <div className="flex flex-col items-end gap-1">
+              <span className="font-serif text-[48px] leading-none text-ink-100">{total.toLocaleString()}</span>
+              <span className="text-xs text-ink-400">documents indexed</span>
+            </div>
+          }
+        />
 
         <TableCard.Root className="flex min-h-0 flex-1 flex-col">
           <TableCard.Header
@@ -79,8 +121,20 @@ export default function KnowledgeBasePage() {
               </div>
             }
           />
+          {isAdmin && selectedIds.size > 0 && (
+            <div className="flex items-center justify-between border-b border-secondary bg-secondary/40 px-4 py-2 md:px-6">
+              <span className="text-xs text-ink-400">{selectedIds.size} selected</span>
+              <Button color="secondary" size="sm" isLoading={bulkExcluding} onPress={handleBulkExclude}>
+                Exclude from retrieval
+              </Button>
+            </div>
+          )}
           <div className="flex-1 overflow-y-auto">
-            <DocumentTable documents={documents} selectedId={selectedId} onSelect={setSelectedId} />
+            {loaded ? (
+              <DocumentTable documents={documents} selectedIds={selectedIds} onSelectionChange={setSelectedIds} onOpen={setOpenId} />
+            ) : (
+              <TableRowsSkeleton columns={4} />
+            )}
           </div>
           <div className="flex items-center justify-between border-t border-secondary px-4 py-3 text-xs text-ink-500 md:px-6">
             <span>
@@ -108,15 +162,14 @@ export default function KnowledgeBasePage() {
         </TableCard.Root>
       </div>
 
-      {selectedId && (
-        <DocumentDetailDrawer
-          documentId={selectedId}
-          onClose={() => setSelectedId(null)}
-          onExcludedChange={(excluded) =>
-            setDocuments((prev) => prev.map((d) => (d.id === selectedId ? { ...d, excluded_from_retrieval: excluded } : d)))
-          }
-        />
-      )}
+      <DocumentDetailDrawer
+        isOpen={openId !== null}
+        documentId={openId}
+        onClose={() => setOpenId(null)}
+        onExcludedChange={(excluded) =>
+          setDocuments((prev) => prev.map((d) => (d.id === openId ? { ...d, excluded_from_retrieval: excluded } : d)))
+        }
+      />
     </div>
   );
 }

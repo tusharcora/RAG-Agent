@@ -1,30 +1,25 @@
+import asyncio
 import json
 import logging
+import time
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from google import genai
-from google.genai import errors as genai_errors
-from google.genai import types as genai_types
 from pydantic import BaseModel
-from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from app.core.auth import AuthContext, require_auth
 from app.core.config import settings
 from app.core.db import get_session
+from app.core.llm import LlmError, load_llm_config, stream_answer
 from app.core.ratelimit import rate_limiter_per_user
+from app.core.retrieval import retrieve_chunks
 from app.core.session_store import append_history, load_history
-from app.integrations.voyage import embed_texts
-from app.models.rag import Chunk, ConnectionMember, Document, OAuthConnection
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(dependencies=[Depends(rate_limiter_per_user("query", settings.rate_limit_query_per_minute))])
-
-_genai_client = genai.Client(api_key=settings.google_api_key)
 
 SYSTEM_PROMPT = """You are a knowledge assistant answering questions using retrieved excerpts \
 from the user's Notion workspace and Jira project.
@@ -51,44 +46,30 @@ def _sse(event: str, data: dict) -> bytes:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n".encode()
 
 
-def _is_rate_limited(exc: BaseException) -> bool:
-    return isinstance(exc, genai_errors.APIError) and getattr(exc, "code", None) == 429
+HEARTBEAT_SECONDS = 10
 
 
-def _to_gemini_contents(history: list[dict], user_turn: str) -> list[genai_types.Content]:
-    # Gemini uses role="model" for assistant turns, not "assistant" — translated
-    # only at this boundary; Redis-stored history keeps "assistant" internally.
-    contents = [
-        genai_types.Content(
-            role="model" if turn["role"] == "assistant" else "user",
-            parts=[genai_types.Part.from_text(text=turn["content"])],
-        )
-        for turn in history
-    ]
-    contents.append(genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=user_turn)]))
-    return contents
-
-
-@retry(
-    retry=retry_if_exception(_is_rate_limited),
-    wait=wait_exponential(multiplier=1, min=1, max=30),
-    stop=stop_after_attempt(5),
-    reraise=True,
-)
-async def _open_gemini_stream(contents: list[genai_types.Content]):
-    """Retries only connection establishment (the request that can 429) —
-    once iteration starts and delta events may already be on the wire, a
-    failure surfaces as an `error` SSE event instead, not a silent retry."""
-    return await _genai_client.aio.models.generate_content_stream(
-        model=settings.query_model,
-        contents=contents,
-        # 1024 was cutting real answers off mid-sentence for anything beyond a
-        # short factual question — citation-heavy, multi-excerpt synthesis
-        # routinely needs more. 4096 gives real headroom; finish_reason is
-        # still checked below so a truncation that happens anyway is surfaced
-        # to the frontend instead of silently handed over as a complete answer.
-        config=genai_types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT, max_output_tokens=4096),
-    )
+async def _with_heartbeat(agen):
+    """Yields the generator's items, plus None whenever HEARTBEAT_SECONDS pass
+    with nothing new. The pending __anext__ is awaited again, never cancelled,
+    so the underlying stream isn't torn down by the timeout."""
+    pending = asyncio.ensure_future(agen.__anext__())
+    try:
+        while True:
+            done, _ = await asyncio.wait({pending}, timeout=HEARTBEAT_SECONDS)
+            if not done:
+                yield None
+                continue
+            try:
+                item = pending.result()
+            except StopAsyncIteration:
+                return
+            yield item
+            pending = asyncio.ensure_future(agen.__anext__())
+    finally:
+        if not pending.done():
+            pending.cancel()
+        await agen.aclose()
 
 
 @router.post("")
@@ -111,46 +92,11 @@ async def query(
         session_id = str(uuid.uuid4())
     top_k = request.top_k or settings.query_top_k
 
-    [question_embedding] = await embed_texts([request.question], input_type="query")
-
-    stmt = (
-        select(Chunk.content, Document.title, Document.url, Document.source)
-        .join(Document, Document.id == Chunk.document_id)
-        .join(OAuthConnection, OAuthConnection.id == Document.connection_id)
-        .where(
-            Chunk.embedding.is_not(None),
-            OAuthConnection.org_id == auth.org_id,
-            # A document flagged stale/wrong (see documents.py's
-            # PATCH .../exclude) must never surface as a source or get
-            # cited — filtered here, before ORDER BY ... LIMIT, same as the
-            # visibility filter below, not as a post-fetch step.
-            Document.excluded_from_retrieval.is_(False),
-        )
-    )
-    if auth.role not in ("owner", "admin"):
-        # Plain members see org-wide connections plus any connection they're
-        # explicitly on the allow-list for. This filter runs before ORDER BY
-        # ... LIMIT below (not as a post-fetch step) so a restricted member
-        # gets the true top-k among *visible* chunks, not an unfiltered top-k
-        # truncated afterward.
-        stmt = stmt.where(
-            or_(
-                OAuthConnection.visibility_mode == "org_wide",
-                OAuthConnection.id.in_(
-                    select(ConnectionMember.connection_id).where(ConnectionMember.user_id == auth.user_id)
-                ),
-            )
-        )
-    stmt = stmt.order_by(Chunk.embedding.cosine_distance(question_embedding)).limit(top_k)
-
-    result = await session.execute(stmt)
-    rows = result.mappings().all()
-    if len(rows) < top_k:
-        # pgvector's HNSW index does an approximate walk; a highly selective
-        # permission filter can return fewer than top_k post-filter rows.
-        # Not fixed in v1 (small expected per-org corpus) — logged so
-        # degraded recall is visible rather than silently confident.
-        logger.info("Retrieved %d/%d rows for org=%s (permission filter may have reduced recall)", len(rows), top_k, auth.org_id)
+    rows = await retrieve_chunks(session, auth, request.question, top_k)
+    try:
+        llm = await load_llm_config(session, auth.org_id)
+    except LlmError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
     history = await load_history(session, auth.org_id, auth.user_id, session_id) if request.session_id else []
 
@@ -184,7 +130,9 @@ async def query(
             # this turn at all — the fallback conversation existed in the
             # sidebar (via the user-turn append above) but replaying it via
             # GET /sessions/{id} would have shown only the question, no reply.
-            message_id = await append_history(session, auth.org_id, auth.user_id, session_id, "assistant", fallback)
+            message_id = await append_history(
+                session, auth.org_id, auth.user_id, session_id, "assistant", fallback, sources=[], cited_indices=[]
+            )
             yield _sse(
                 "done",
                 {
@@ -201,26 +149,28 @@ async def query(
             f"[{i + 1}] ({r['source']}) {r['title']}\n{r['content']}" for i, r in enumerate(rows)
         )
         user_turn = f"Excerpts:\n\n{excerpt_block}\n\nQuestion: {request.question}"
-        contents = _to_gemini_contents(history, user_turn)
-
-        try:
-            stream = await _open_gemini_stream(contents)
-        except Exception as exc:
-            logger.exception("Failed to open Gemini stream")
-            yield _sse("error", {"message": str(exc)})
-            return
-
+        started = time.monotonic()
         full_answer = ""
         truncated = False
         try:
-            async for chunk in stream:
-                if chunk.text:
-                    full_answer += chunk.text
-                    yield _sse("delta", {"text": chunk.text})
-                if chunk.candidates and chunk.candidates[0].finish_reason == genai_types.FinishReason.MAX_TOKENS:
-                    truncated = True
+            async for item in _with_heartbeat(stream_answer(llm, SYSTEM_PROMPT, history, user_turn)):
+                if item is None:
+                    # SSE comment; clients ignore it, but it keeps proxies from
+                    # closing the stream while a slow model (e.g. a large local
+                    # model still loading) hasn't produced its first token.
+                    yield b": keep-alive\n\n"
+                    continue
+                kind, value = item
+                if kind == "delta":
+                    full_answer += value
+                    yield _sse("delta", {"text": value})
+                else:
+                    truncated = bool(value)
+        except LlmError as exc:
+            yield _sse("error", {"message": str(exc)})
+            return
         except Exception as exc:
-            logger.exception("Gemini stream failed mid-response")
+            logger.exception("Answer generation failed (provider=%s)", llm.provider)
             yield _sse("error", {"message": str(exc)})
             return
 
@@ -228,7 +178,19 @@ async def query(
 
         # User turn already recorded at the top of event_stream(); only the
         # assistant side is new here.
-        message_id = await append_history(session, auth.org_id, auth.user_id, session_id, "assistant", full_answer)
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        message_id = await append_history(
+            session,
+            auth.org_id,
+            auth.user_id,
+            session_id,
+            "assistant",
+            full_answer,
+            sources=sources,
+            cited_indices=cited_indices,
+            model=llm.label,
+            elapsed_ms=elapsed_ms,
+        )
 
         yield _sse(
             "done",
@@ -238,6 +200,8 @@ async def query(
                 "answer": full_answer,
                 "truncated": truncated,
                 "message_id": str(message_id),
+                "model": llm.label,
+                "elapsed_ms": elapsed_ms,
             },
         )
 

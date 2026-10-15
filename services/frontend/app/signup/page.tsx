@@ -51,7 +51,11 @@ function SignupForm() {
       } else if (err instanceof ApiError && err.status === 400) {
         setError("That invite link looks invalid or expired.");
       } else {
-        setError("Couldn't reach the server. Check your connection and try again.");
+        setError(
+          err instanceof ApiError
+            ? `The server returned an error (${err.status}). Check the API logs and try again.`
+            : "Couldn't reach the server. Check your connection and try again.",
+        );
       }
     } finally {
       setSubmitting(false);
@@ -59,12 +63,12 @@ function SignupForm() {
   }
 
   return (
-    <div className="relative flex min-h-[calc(100vh-57px)] items-center justify-center px-4 py-12">
+    <div className="relative flex min-h-screen items-center justify-center px-4 py-12">
       <div
         aria-hidden
-        className="pointer-events-none absolute left-1/2 top-1/4 h-96 w-96 -translate-x-1/2 rounded-full bg-gold-400/10 blur-[100px]"
+        className="pointer-events-none absolute left-1/2 top-1/4 h-96 w-96 -translate-x-1/2 rounded-full bg-accent/20 blur-[100px]"
       />
-      <div className="cyber-chamfer relative w-full max-w-sm rounded-2xl border border-ink-800 bg-ink-900/60 p-7 shadow-panel">
+      <div className="relative w-full max-w-sm rounded-2xl border border-ink-800 bg-ink-900/60 p-7 shadow-panel">
         <h1 className="mb-1 text-lg font-semibold text-ink-50">
           {inviteToken ? "Accept invite" : "Create your organization"}
         </h1>
@@ -86,7 +90,7 @@ function SignupForm() {
           {!inviteToken && (
             <Input label="Organization name" type="text" value={orgName} onChange={setOrgName} isRequired />
           )}
-          {error && <p className="text-sm text-coral-400">{error}</p>}
+          {error && <p className="text-sm text-error-primary">{error}</p>}
           <Button type="submit" isDisabled={submitting} isLoading={submitting} className="w-full" size="lg">
             Sign up
           </Button>
@@ -102,7 +106,7 @@ function SignupForm() {
 
         <p className="mt-6 text-center text-sm text-ink-500">
           Already have an account?{" "}
-          <Link href="/login" className="text-coral-400 hover:text-coral-300">
+          <Link href="/login" className="text-ink-100 underline underline-offset-2 hover:text-ink-300">
             Log in
           </Link>
         </p>

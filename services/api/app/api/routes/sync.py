@@ -3,7 +3,7 @@ import logging
 import httpx
 from cryptography.fernet import InvalidToken
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
@@ -14,7 +14,7 @@ from app.core.db import get_session
 from app.core.queue import publish_event
 from app.core.ratelimit import rate_limiter
 from app.integrations.jira_auth import ensure_fresh_token
-from app.models.rag import OAuthConnection
+from app.models.rag import Document, OAuthConnection
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +57,29 @@ async def _get_connection(session: AsyncSession, provider: str, org_id) -> OAuth
     return connection
 
 
+async def _prune_missing(session: AsyncSession, connection: OAuthConnection, source: str, seen: set[str]) -> int:
+    """Deletes this connection's documents (and, by cascade, their chunks) that
+    the provider no longer returned: deleted, trashed, or no longer shared
+    with the integration. Only called after a complete, untruncated
+    enumeration, otherwise a capped sync would wipe everything past the cap.
+    An empty result is trusted: request failures raise before reaching here,
+    so a successful empty listing really means nothing is shared any more."""
+    result = await session.execute(
+        delete(Document)
+        .where(
+            Document.connection_id == connection.id,
+            Document.source == source,
+            Document.external_id.not_in(seen),
+        )
+        .returning(Document.id)
+    )
+    removed = len(result.all())
+    await session.commit()
+    if removed:
+        logger.info("Removed %d %s documents no longer visible to connection=%s", removed, source, connection.id)
+    return removed
+
+
 async def sync_notion_connection(session: AsyncSession, connection: OAuthConnection) -> dict:
     """Enumerates all pages via Notion's /search and publishes one
     rag.notion_page_updated event per page — no embedding work happens here,
@@ -73,6 +96,7 @@ async def sync_notion_connection(session: AsyncSession, connection: OAuthConnect
 
     published = 0
     truncated = False
+    seen: set[str] = set()
     cursor: str | None = None
     headers = {
         "Authorization": f"Bearer {access_token}",
@@ -89,9 +113,13 @@ async def sync_notion_connection(session: AsyncSession, connection: OAuthConnect
             data = resp.json()
 
             for page in data.get("results", []):
+                # Trashed pages can still come back from /search; treat them as gone.
+                if page.get("in_trash") or page.get("archived"):
+                    continue
                 if published >= settings.max_pages_per_sync:
                     truncated = True
                     break
+                seen.add(page["id"])
                 await publish_event(
                     session,
                     routing_key="rag.notion_page_updated",
@@ -113,8 +141,9 @@ async def sync_notion_connection(session: AsyncSession, connection: OAuthConnect
                 break
             cursor = data.get("next_cursor")
 
-    logger.info("Notion sync published=%d truncated=%s", published, truncated)
-    return {"published": published, "truncated": truncated}
+    removed = 0 if truncated else await _prune_missing(session, connection, "notion", seen)
+    logger.info("Notion sync published=%d truncated=%s removed=%d", published, truncated, removed)
+    return {"published": published, "truncated": truncated, "removed": removed}
 
 
 @router.post("/notion", dependencies=[Depends(rate_limiter("sync_notion", settings.rate_limit_sync_per_minute))])
@@ -133,6 +162,7 @@ async def sync_jira_connection(session: AsyncSession, connection: OAuthConnectio
 
     published = 0
     truncated = False
+    seen: set[str] = set()
     start_at = 0
     page_size = 100
     headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
@@ -149,6 +179,7 @@ async def sync_jira_connection(session: AsyncSession, connection: OAuthConnectio
                 if published >= settings.max_issues_per_sync:
                     truncated = True
                     break
+                seen.add(str(issue["id"]))
                 await publish_event(
                     session,
                     routing_key="rag.jira_issue_updated",
@@ -169,8 +200,9 @@ async def sync_jira_connection(session: AsyncSession, connection: OAuthConnectio
             if truncated or not issues or start_at >= data.get("total", 0):
                 break
 
-    logger.info("Jira sync published=%d truncated=%s", published, truncated)
-    return {"published": published, "truncated": truncated}
+    removed = 0 if truncated else await _prune_missing(session, connection, "jira", seen)
+    logger.info("Jira sync published=%d truncated=%s removed=%d", published, truncated, removed)
+    return {"published": published, "truncated": truncated, "removed": removed}
 
 
 @router.post("/jira", dependencies=[Depends(rate_limiter("sync_jira", settings.rate_limit_sync_per_minute))])
