@@ -82,7 +82,7 @@ export function KeysStep({ onBack, onDone }: { onBack: () => void; onDone: () =>
                 aria-checked={provider === p.id}
                 onClick={() => {
                   setProvider(p.id);
-                  setErrors((e) => ({ ...e, api_key: undefined, model: undefined }));
+                  setErrors((e) => ({ ...e, api_key: undefined, model: undefined, form: undefined }));
                 }}
                 className={`h-9 rounded-full px-4 text-sm transition ${
                   provider === p.id ? "bg-ink-100 text-ink-950" : "text-ink-100 hover:bg-ink-800"

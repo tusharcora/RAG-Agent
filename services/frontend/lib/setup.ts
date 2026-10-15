@@ -80,7 +80,13 @@ export async function pullModel(model: string, onProgress: (p: PullProgress) => 
     } catch {
       return;
     }
-    if (name === "progress") onProgress({ completed: parsed.completed || undefined, total: parsed.total || undefined, status: parsed.status ?? "" });
+    if (name === "progress") {
+      // Status-only lines ("writing manifest") carry total 0: leave both undefined so callers keep
+      // the last known values. A known total always comes with its own completed, including 0
+      // (a new layer starting).
+      const known = typeof parsed.total === "number" && parsed.total > 0;
+      onProgress({ completed: known ? parsed.completed ?? 0 : undefined, total: known ? parsed.total : undefined, status: parsed.status ?? "" });
+    }
     else if (name === "done") outcome = "done";
     else if (name === "error") outcome = new Error(parsed.message ?? "Download failed");
   };
