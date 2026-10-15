@@ -53,6 +53,9 @@ export interface ConnectionStatus {
   last_sync_status: "received" | "processing" | "succeeded" | "failed" | "dead_lettered" | null;
   // Desktop: the sign-in service refused this Jira connection's refresh token (cleared by Reconnect).
   needs_reconnect?: boolean;
+  // Disconnected by an owner/admin: connected is false, id remains, document_count = documents kept.
+  disconnected: boolean;
+  document_count: number;
 }
 
 export interface MeResponse {
@@ -91,6 +94,8 @@ export interface DocumentSummary {
   synced_at: string;
   chunk_count: number;
   excluded_from_retrieval: boolean;
+  // Its connection was disconnected with documents kept: still searchable, never updated.
+  from_disconnected_source?: boolean;
 }
 
 export interface DocumentListResponse {

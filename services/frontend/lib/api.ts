@@ -163,6 +163,16 @@ export function setConnectionVisibility(connectionId: string, mode: "org_wide" |
   return patch<ConnectionStatus>(`/connections/${connectionId}/visibility`, { mode });
 }
 
+export function disconnectConnection(connectionId: string, removeDocuments: boolean) {
+  return post<{ disconnected: boolean; removed: number }>(`/connections/${connectionId}/disconnect`, {
+    remove_documents: removeDocuments,
+  });
+}
+
+export function removeConnectionDocuments(connectionId: string) {
+  return post<{ removed: number }>(`/connections/${connectionId}/remove-documents`);
+}
+
 export function getConnectionPreview(connectionId: string) {
   return get<ConnectionPreview>(`/connections/${connectionId}/preview`);
 }

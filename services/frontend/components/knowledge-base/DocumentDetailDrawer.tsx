@@ -88,6 +88,9 @@ export function DocumentDetailDrawer({
               View original
             </Button>
           )}
+          {detail?.from_disconnected_source && (
+            <p className="mt-1 text-xs text-ink-500">From a disconnected source · no longer updated</p>
+          )}
         </div>
         <Button color="tertiary" size="sm" iconLeading={X} onPress={onClose} className="shrink-0 rounded-full" />
       </div>

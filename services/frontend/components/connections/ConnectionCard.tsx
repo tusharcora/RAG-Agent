@@ -5,9 +5,11 @@ import {
   API_BASE,
   ApiError,
   connectNotionToken,
+  disconnectConnection,
   getConnectionMembers,
   getConnectionPreview,
   getOrgMembers,
+  removeConnectionDocuments,
   setConnectionMembers,
   setConnectionVisibility,
   syncProvider,
@@ -22,10 +24,17 @@ import type { ConnectionPreview, ConnectionStatus, OrgMember } from "@/lib/types
 import { Badge } from "@/components/base/badges/badges";
 import { Button } from "@/components/base/buttons/button";
 import { Input } from "@/components/base/input/input";
+import { Modal } from "@/components/base/modal/modal";
+import { ConfirmDialog } from "@/components/base/modal/confirm-dialog";
+import { RadioButton, RadioGroup } from "@/components/base/radio-buttons/radio-buttons";
 
 const LABELS: Record<string, string> = { notion: "Notion", jira: "Jira" };
 // The api's refusal text when the sign-in service rejects Jira's refresh token (app/integrations/jira_auth.py).
 const JIRA_RECONNECT = "Jira needs reconnecting";
+
+function documentsLabel(n: number): string {
+  return `${n.toLocaleString()} document${n === 1 ? "" : "s"}`;
+}
 
 // A failed POST /sync/{provider}: show the server's reason and note whether Jira needs reconnecting.
 function syncStartFailed(err: unknown, fallback: string): boolean {
@@ -77,6 +86,28 @@ export function ConnectionCard({
     onSettled: () => onChanged?.(),
   });
   const waiting = flow.phase === "waiting";
+  // Disconnected with documents kept: they stay searchable until removed or reconnected elsewhere.
+  // Disconnected with nothing kept looks exactly like never connected.
+  const keptCount = status.disconnected ? status.document_count : 0;
+  const kept = keptCount > 0;
+  const [disconnectOpen, setDisconnectOpen] = useState(false);
+  const [removeOpen, setRemoveOpen] = useState(false);
+  const [removing, setRemoving] = useState(false);
+
+  const handleRemoveKept = async () => {
+    if (!status.id) return;
+    setRemoving(true);
+    try {
+      const res = await removeConnectionDocuments(status.id);
+      toast.success(`Removed ${documentsLabel(res.removed)}`);
+      setRemoveOpen(false);
+      onChanged?.();
+    } catch (err) {
+      toast.error("Couldn't remove the documents", err instanceof ApiError ? err.detail : undefined);
+    } finally {
+      setRemoving(false);
+    }
+  };
   // With one-click Connect the pasted-secret form is opt-in; without it, it is the only way in.
   const showNotionForm =
     IS_DESKTOP && status.provider === "notion" && !waiting && (editingSecret || (!status.connected && (!oneClick || showSecretForm)));
@@ -142,6 +173,8 @@ export function ConnectionCard({
       (!healthy && (lastError === undefined || lastError.includes(JIRA_RECONNECT))));
   const statusLabel = waiting
     ? "WAITING FOR YOU"
+    : kept
+    ? "DISCONNECTED"
     : !status.connected
     ? "NOT CONNECTED"
     : needsReconnect
@@ -165,7 +198,9 @@ export function ConnectionCard({
         <span className="flex items-center gap-2.5 text-[17px] font-semibold text-ink-100">
           <SourceIcon source={status.provider} className="h-[18px] w-[18px]" />
           {LABELS[status.provider] ?? status.provider}
-          {status.workspace_name && <span className="truncate text-sm font-normal text-ink-500">· {status.workspace_name}</span>}
+          {status.workspace_name && (status.connected || kept) && (
+            <span className="truncate text-sm font-normal text-ink-500">· {status.workspace_name}</span>
+          )}
         </span>
         <span className={`shrink-0 font-mono text-[11px] tracking-[0.06em] ${statusTone}`}>{statusLabel}</span>
       </div>
@@ -211,6 +246,13 @@ export function ConnectionCard({
             )}
           </div>
         </>
+      ) : kept ? (
+        <div className="flex flex-col gap-1">
+          <p className="text-[15px] font-medium text-ink-100">Disconnected · {documentsLabel(keptCount)} kept</p>
+          <p className="text-[13px] text-ink-400">
+            They stay searchable but won&apos;t update. Connect again to resume syncing.
+          </p>
+        </div>
       ) : (
         <p className="text-sm text-ink-400">
           {oneClick
@@ -284,6 +326,11 @@ export function ConnectionCard({
                 Choose pages in Notion
               </Button>
             )}
+            {isAdmin && status.id && (
+              <Button color="tertiary" size="sm" onPress={() => setDisconnectOpen(true)}>
+                Disconnect
+              </Button>
+            )}
             {isPolling && (
               <Badge type="pill-color" color="warning" size="sm" className="animate-pulse">
                 Syncing…
@@ -293,7 +340,7 @@ export function ConnectionCard({
         ) : oneClick ? (
           <>
             <Button color="primary" size="sm" isDisabled={starting} onPress={() => start(status.provider as ConnectPurpose)}>
-              Connect {LABELS[status.provider]}
+              {kept ? "Connect again" : `Connect ${LABELS[status.provider]}`}
             </Button>
             {status.provider === "notion" && (
               <Button color="link-color" size="sm" onPress={() => setShowSecretForm((v) => !v)}>
@@ -305,7 +352,12 @@ export function ConnectionCard({
           <p className="text-xs text-ink-500">Jira isn&apos;t available in the desktop app yet.</p>
         ) : (
           <Button color="primary" size="sm" href={`${API_BASE}/oauth/${status.provider}/authorize`}>
-            Connect
+            {kept ? "Connect again" : "Connect"}
+          </Button>
+        )}
+        {kept && isAdmin && !status.connected && (
+          <Button color="link-gray" size="sm" onPress={() => setRemoveOpen(true)}>
+            Remove them
           </Button>
         )}
       </div>
@@ -332,7 +384,103 @@ export function ConnectionCard({
       {!IS_DESKTOP && status.connected && isAdmin && status.id && (
         <AccessControl connectionId={status.id} status={status} />
       )}
+
+      {status.id && (
+        <DisconnectDialog
+          isOpen={disconnectOpen}
+          onOpenChange={setDisconnectOpen}
+          connectionId={status.id}
+          provider={status.provider}
+          documentCount={status.document_count}
+          onDone={() => onChanged?.()}
+        />
+      )}
+      <ConfirmDialog
+        isOpen={removeOpen}
+        onOpenChange={setRemoveOpen}
+        title={`Remove ${documentsLabel(keptCount)}?`}
+        description={`They were kept when ${LABELS[status.provider] ?? status.provider} was disconnected. They disappear from search, answers and the knowledge base now.`}
+        confirmLabel="Remove"
+        isDestructive
+        isLoading={removing}
+        onConfirm={handleRemoveKept}
+      />
     </section>
+  );
+}
+
+// Same markup as ConfirmDialog, plus the remove/keep choice for the connection's documents.
+function DisconnectDialog({
+  isOpen,
+  onOpenChange,
+  connectionId,
+  provider,
+  documentCount,
+  onDone,
+}: {
+  isOpen: boolean;
+  onOpenChange: (isOpen: boolean) => void;
+  connectionId: string;
+  provider: string;
+  documentCount: number;
+  onDone: () => void;
+}) {
+  const [choice, setChoice] = useState<"remove" | "keep">("remove");
+  const [busy, setBusy] = useState(false);
+  const label = LABELS[provider] ?? provider;
+  const title = `Disconnect ${label}?`;
+
+  useEffect(() => {
+    if (isOpen) setChoice("remove");
+  }, [isOpen]);
+
+  async function confirm() {
+    setBusy(true);
+    try {
+      const res = await disconnectConnection(connectionId, choice === "remove");
+      toast.success(
+        `${label} disconnected`,
+        choice === "remove" ? `Removed ${documentsLabel(res.removed)}.` : "Its documents stay searchable.",
+      );
+      onOpenChange(false);
+      onDone();
+    } catch (err) {
+      toast.error(`Couldn't disconnect ${label}`, err instanceof ApiError ? err.detail : undefined);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal isOpen={isOpen} onOpenChange={onOpenChange} className="w-96" aria-label={title}>
+      <p className="text-sm font-semibold text-ink-100">{title}</p>
+      <p className="mt-1.5 text-sm text-ink-400">Its sign-in is removed and it stops syncing.</p>
+      <RadioGroup
+        aria-label="What happens to its documents"
+        value={choice}
+        onChange={(v) => setChoice(v as "remove" | "keep")}
+        className="mt-4 gap-3"
+      >
+        <RadioButton
+          value="remove"
+          label={`Remove its ${documentCount.toLocaleString()} synced document${documentCount === 1 ? "" : "s"} too`}
+          hint="They disappear from search, answers and the knowledge base now."
+        />
+        <RadioButton
+          value="keep"
+          label="Keep them searchable"
+          hint="They stay, labelled as from a disconnected source, and won't update."
+        />
+      </RadioGroup>
+      <div className="mt-4 flex justify-end gap-2">
+        <Button color="secondary" size="sm" onPress={() => onOpenChange(false)} isDisabled={busy}>
+          Cancel
+        </Button>
+        <Button color="primary-destructive" size="sm" onPress={confirm} isLoading={busy}>
+          Disconnect
+        </Button>
+      </div>
+    </Modal>
   );
 }
 

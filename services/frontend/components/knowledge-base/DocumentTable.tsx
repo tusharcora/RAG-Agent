@@ -62,6 +62,11 @@ export function DocumentTable({
                     Excluded
                   </Badge>
                 )}
+                {doc.from_disconnected_source && (
+                  <Badge type="pill-color" color="gray" size="sm" className="shrink-0">
+                    From a disconnected source
+                  </Badge>
+                )}
               </span>
             </Table.Cell>
             <Table.Cell>
