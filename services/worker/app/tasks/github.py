@@ -15,6 +15,9 @@ never waited on by a session of ours.
   itself → its document and recorded failure are deleted and the event is acked.
 - Disconnected or deleted connection → acked and skipped. Needs-reconnect and GitHub being
   unavailable raise, so the event retries and then dead-letters.
+- Writing (or deleting) a file document clears its repo's `github_repos.tree_sha`, so the next
+  sync diffs the tree again: a late event for an older blob, processed after the sync stored the
+  tree sha, would otherwise leave the older content in place until the tree changes.
 - `record_github_failure` is the dead-letter hook: it records the item's version in
   `github_failures`, so syncs stop re-enqueueing it until it changes on GitHub.
 """
@@ -25,13 +28,13 @@ import uuid
 from collections.abc import Awaitable, Callable
 from functools import partial
 
-from sqlalchemy import delete, func
+from sqlalchemy import delete, func, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.core.db import get_session
 from app.core.telemetry import tracer
 from app.integrations import github
-from app.models.rag import Document, GithubFailure, OAuthConnection
+from app.models.rag import Document, GithubFailure, GithubRepo, OAuthConnection
 from app.tasks import embed
 
 logger = logging.getLogger(__name__)
@@ -169,6 +172,8 @@ async def _store(kind: str, payload: dict, fetch: Callable[[github.GithubClient]
                     Document.external_id == external_id,
                 )
             )
+            if kind == "file":
+                await _clear_tree_sha(session, connection_id, payload["repo_id"])
             await session.commit()
             logger.info("%s is gone from GitHub; removed its document", external_id)
             return
@@ -184,6 +189,19 @@ async def _store(kind: str, payload: dict, fetch: Callable[[github.GithubClient]
             sections=[(text, {})],
             external_version=_version(kind, payload),
         )
+        if kind == "file":
+            # Separately committed, so the repo row isn't locked while the content is embedded.
+            await _clear_tree_sha(session, connection_id, payload["repo_id"])
+            await session.commit()
+
+
+async def _clear_tree_sha(session, connection_id: uuid.UUID, repo_id) -> None:
+    await session.execute(
+        update(GithubRepo)
+        .where(GithubRepo.connection_id == connection_id, GithubRepo.repo_id == int(repo_id))
+        .values(tree_sha=None)
+        .execution_options(synchronize_session=False)
+    )
 
 
 async def handle_github_file_updated(payload: dict) -> None:

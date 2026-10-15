@@ -222,6 +222,53 @@ async def test_file_handler_embeds_and_sets_external_version(engine, gh, embeds,
     assert call.headers["authorization"] == "Bearer A"
 
 
+async def seed_repo(pg_dsn, conn_id, repo_id=REPO_ID, tree_sha="T1"):
+    await q(
+        pg_dsn,
+        "INSERT INTO github_repos (connection_id, installation_id, repo_id, full_name, html_url, default_branch,"
+        " tree_sha) VALUES ($1, 1, $2, 'octo/repo', 'https://github.com/octo/repo', 'main', $3)",
+        conn_id, repo_id, tree_sha,
+    )
+
+
+async def tree_shas(pg_dsn, conn_id):
+    rows = await q(pg_dsn, "SELECT repo_id, tree_sha FROM github_repos WHERE connection_id = $1", conn_id)
+    return {r["repo_id"]: r["tree_sha"] for r in rows}
+
+
+@pytest.mark.asyncio
+async def test_file_write_clears_the_repo_tree_sha(engine, gh, embeds, pg_dsn):
+    # A late (stale) file event can overwrite a newer version after the sync stored the tree sha;
+    # clearing it makes the next sync diff the tree again and re-enqueue what differs.
+    from app.tasks.github import handle_github_file_updated, handle_github_issue_updated
+
+    conn_id = await seed(pg_dsn)
+    await seed_repo(pg_dsn, conn_id)
+    await seed_repo(pg_dsn, conn_id, repo_id=999, tree_sha="OTHER")
+    gh.routes["/repos/octo/repo/git/blobs/sha1"] = blob("hello")
+    await handle_github_file_updated(file_payload(conn_id))
+    assert await tree_shas(pg_dsn, conn_id) == {REPO_ID: None, 999: "OTHER"}
+
+    # Content unchanged (no re-embed) still clears it; so does deleting a file that is gone.
+    await q(pg_dsn, "UPDATE github_repos SET tree_sha = 'T2' WHERE connection_id = $1 AND repo_id = $2",
+            conn_id, REPO_ID)
+    await handle_github_file_updated(file_payload(conn_id))
+    assert (await tree_shas(pg_dsn, conn_id))[REPO_ID] is None
+    await q(pg_dsn, "UPDATE github_repos SET tree_sha = 'T3' WHERE connection_id = $1 AND repo_id = $2",
+            conn_id, REPO_ID)
+    gh.routes.clear()
+    await handle_github_file_updated(file_payload(conn_id))
+    assert (await tree_shas(pg_dsn, conn_id))[REPO_ID] is None
+
+    # Issues/PRs don't touch it.
+    await q(pg_dsn, "UPDATE github_repos SET tree_sha = 'T4' WHERE connection_id = $1 AND repo_id = $2",
+            conn_id, REPO_ID)
+    gh.routes["/repos/octo/repo/issues/7"] = httpx.Response(200, json=issue_json(7))
+    gh.routes["/repos/octo/repo/issues/7/comments"] = httpx.Response(200, json=[])
+    await handle_github_issue_updated(item_payload(conn_id, 7))
+    assert (await tree_shas(pg_dsn, conn_id))[REPO_ID] == "T4"
+
+
 @pytest.mark.asyncio
 async def test_issue_text_includes_comments(engine, gh, embeds, pg_dsn):
     from app.tasks.github import handle_github_issue_updated
