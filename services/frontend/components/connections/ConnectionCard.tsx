@@ -224,7 +224,7 @@ export function ConnectionCard({
           <div className="grid grid-cols-3 gap-4">
             <BigStat value={docCount === undefined ? "—" : docCount.toLocaleString()} label={isGithub ? "documents" : status.provider === "jira" ? "issues" : "pages"} />
             {isGithub ? (
-              <BigStat value={github ? github.repo_count.toLocaleString() : "—"} label="repositories" />
+              <BigStat value={github ? github.repo_count.toLocaleString() : "—"} label={github?.repo_count === 1 ? "repository" : "repositories"} />
             ) : (
               <BigStat value={preview ? `${preview.visible_count}${preview.truncated ? "+" : ""}` : "—"} label="visible to integration" />
             )}

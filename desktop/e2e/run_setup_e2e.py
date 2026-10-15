@@ -543,6 +543,21 @@ def fake_github(port: int) -> subprocess.Popen:
     return p
 
 
+def github_hits(path: str | None = None):
+    """How often the fake GitHub was asked for `path` (or every path asked, in order)."""
+    asked = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{GITHUB_PORT}/_requests").read())["requests"]
+    return asked if path is None else asked.count(path)
+
+
+def stop_proc(proc: subprocess.Popen) -> None:
+    proc.terminate()
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+
 def path_g() -> None:
     """Connect GitHub through the fake sign-in Worker and a fake GitHub API, sync, see the documents, disconnect."""
     home = tempfile.mkdtemp(prefix="ka-e2e-g-", dir="/tmp")
@@ -586,8 +601,24 @@ def path_g() -> None:
             # Connecting starts the first sync, which lists the repositories.
             expect(card.get_by_text(re.compile(r"^1 repositor"))).to_be_visible(timeout=30000)
             expect(card.get_by_text("e2e-octo").first).to_be_visible()
+            expect(card.get_by_text("repository", exact=True)).to_be_visible()  # the big stat's label, singular
             print("G: card shows e2e-octo and 1 repository")
-            card.get_by_role("button", name="Sync now").click()
+            # The connect's own sync lists the tree and the issues once each; wait for both, then Sync now
+            # must list them again (its POST answers only after enumerating).
+            tree, issues = "/repos/e2e-octo/notes/git/trees/main", "/repos/e2e-octo/notes/issues"
+            deadline = time.time() + 30
+            while not all(github_hits(q) for q in (tree, issues)):
+                assert time.time() < deadline, f"the connect's sync never listed the repo: {github_hits()}"
+                time.sleep(0.5)
+            before = {q: github_hits(q) for q in (tree, issues)}
+            with page.expect_response(lambda r: "/sync/github" in r.url and r.request.method == "POST",
+                                      timeout=60000) as resp_info:
+                card.get_by_role("button", name="Sync now").click()
+            resp = resp_info.value
+            assert resp.ok, f"POST /sync/github answered {resp.status}: {resp.text()}"
+            after = {q: github_hits(q) for q in (tree, issues)}
+            assert all(after[q] > before[q] for q in (tree, issues)), (before, after)
+            print(f"G: Sync now answered {resp.status} and listed the tree and issues again ({before} -> {after})")
 
             page.goto(launcher.url.rstrip("/") + "/knowledge-base/")
             titles = ["e2e-octo/notes · README.md", "e2e-octo/notes #1: Ship it"]
@@ -602,7 +633,13 @@ def path_g() -> None:
                 page.wait_for_timeout(2000)
                 page.reload()
             print("G: knowledge base lists the README and issue #1")
-            state = github_state(home)
+            deadline = time.time() + 15
+            while True:  # titles can show before the chunk text is readable from another connection
+                state = github_state(home)
+                if ("BLUEBIRD" in state["chunks"].get(titles[0], "")
+                        and "Approved for Friday." in state["chunks"].get(titles[1], "")) or time.time() > deadline:
+                    break
+                time.sleep(1)
             assert "BLUEBIRD" in state["chunks"].get(titles[0], ""), state
             assert "Approved for Friday." in state["chunks"].get(titles[1], ""), state
             assert state["unsuccessful"] == [], state
@@ -626,7 +663,7 @@ def path_g() -> None:
                 expect(page.get_by_text(t, exact=True)).to_have_count(0)
             print("G: knowledge base no longer lists the GitHub documents")
             b.close()
-        asked = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{GITHUB_PORT}/_requests").read())["requests"]
+        asked = github_hits()
         for path in ("/user/installations", "/repos/e2e-octo/notes/git/trees/main", "/repos/e2e-octo/notes/issues/1/comments"):
             assert path in asked, f"fake GitHub never asked for {path}: {asked}"
     finally:
@@ -634,8 +671,7 @@ def path_g() -> None:
             launcher.stop()
         for proc in (github, broker, ollama):
             if proc:
-                proc.terminate()
-                proc.wait()
+                stop_proc(proc)
     print("PASS path G (GitHub source)")
 
 
