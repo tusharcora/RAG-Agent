@@ -350,16 +350,23 @@ class GithubClient:
 
     async def pages(self, path: str, max_pages: int = MAX_PAGES) -> AsyncIterator[list]:
         """Each page of a listing (per_page=100, following Link rel="next"), at most `max_pages`.
-        Raises GithubStatusError on any non-200 page."""
+        Raises GithubStatusError on any non-200 page, GithubContentError on a page that isn't a JSON list."""
         url: str | None = path
         params: dict | None = {"per_page": 100}
         for _ in range(max_pages):
             if not url:
                 return
             resp = await self.get(url, params)
+            where = httpx.URL(resp.request.url).path
             if resp.status_code != 200:
-                raise GithubStatusError(resp.status_code, httpx.URL(resp.request.url).path)
-            yield resp.json()
+                raise GithubStatusError(resp.status_code, where)
+            try:
+                page = resp.json()
+            except ValueError as exc:
+                raise GithubContentError(f"GitHub sent unreadable JSON for {where}") from exc
+            if not isinstance(page, list):
+                raise GithubContentError(f"GitHub sent an unexpected answer for {where}")
+            yield page
             url = resp.links.get("next", {}).get("url")
             params = None  # the next link carries them
         if url:

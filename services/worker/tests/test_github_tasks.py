@@ -644,6 +644,62 @@ async def test_unprocessable_item_end_to_end_is_recorded(engine, gh, embeds, pg_
 
 
 @pytest.mark.asyncio
+async def test_malformed_github_answers_are_content_errors(engine, gh, embeds, pg_dsn):
+    from app.tasks.github import handle_github_issue_updated, handle_github_pr_updated
+
+    conn_id = await seed(pg_dsn)
+    base = "/repos/octo/repo"
+    # Comments that aren't a JSON list of objects.
+    gh.routes[f"{base}/issues/7"] = httpx.Response(200, json=issue_json(7))
+    gh.routes[f"{base}/issues/7/comments"] = httpx.Response(200, json={"message": "not a list"})
+    with pytest.raises(github.GithubContentError):
+        await handle_github_issue_updated(item_payload(conn_id, 7))
+    # Unreadable JSON on a listing page.
+    gh.routes[f"{base}/issues/8"] = httpx.Response(200, json=issue_json(8))
+    gh.routes[f"{base}/issues/8/comments"] = httpx.Response(200, content=b"<html>", headers={"content-type": "text/html"})
+    with pytest.raises(github.GithubContentError):
+        await handle_github_issue_updated(item_payload(conn_id, 8))
+    # An unexpected shape inside the item (a review body that isn't text).
+    gh.routes[f"{base}/pulls/9"] = httpx.Response(200, json=issue_json(9))
+    for path in ("issues/9/comments", "pulls/9/comments", "pulls/9/files"):
+        gh.routes[f"{base}/{path}"] = httpx.Response(200, json=[])
+    gh.routes[f"{base}/pulls/9/reviews"] = httpx.Response(200, json=[{"user": {"login": "x"}, "body": 5}])
+    with pytest.raises(github.GithubContentError):
+        await handle_github_pr_updated(item_payload(conn_id, 9, kind="pull"))
+
+
+@pytest.mark.asyncio
+async def test_our_own_bugs_are_not_item_failures(engine, gh, embeds, pg_dsn, monkeypatch):
+    """A bug in our code around the fetch (not the GitHub answer) surfaces as itself, so the
+    dead-letter hook doesn't record it as the item's failure."""
+    from app.tasks import github as tasks_github
+    from app.tasks.github import _item_specific, handle_github_issue_updated
+
+    conn_id = await seed(pg_dsn)
+    gh.routes["/repos/octo/repo/issues/7"] = httpx.Response(200, json=issue_json(7))
+
+    real_all = github.GithubClient.all
+
+    async def buggy_all(self, path):
+        raise TypeError("bug in our client")
+
+    monkeypatch.setattr(github.GithubClient, "all", buggy_all)
+    with pytest.raises(TypeError) as err:
+        await handle_github_issue_updated(item_payload(conn_id, 7))
+    assert not _item_specific(err.value)
+
+    monkeypatch.setattr(github.GithubClient, "all", real_all)
+    gh.routes["/repos/octo/repo/issues/7/comments"] = httpx.Response(200, json=[])
+
+    def buggy_external_id(kind, payload):
+        raise KeyError("bug in our bookkeeping")
+
+    monkeypatch.setattr(tasks_github, "_external_id", buggy_external_id)
+    with pytest.raises(KeyError):
+        await handle_github_issue_updated(item_payload(conn_id, 7))
+
+
+@pytest.mark.asyncio
 async def test_broker_unreachable_during_refresh_is_not_recorded(engine, gh, embeds, pg_dsn):
     """Desktop: the sign-in service is down while the token needs renewing → GithubUnavailable
     carrying the broker's message. Not the item's fault, so nothing is recorded."""

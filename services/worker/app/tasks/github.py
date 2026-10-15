@@ -26,6 +26,7 @@ import base64
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
+from contextlib import contextmanager
 from functools import partial
 
 from sqlalchemy import delete, func, update
@@ -136,6 +137,16 @@ def _pr_text(pr: dict, conversation: list[dict], reviews: list[dict], review_com
     return "\n\n".join(parts)
 
 
+@contextmanager
+def _decoding(what: str):
+    """Decoding/assembling one GitHub answer (bad base64, unexpected JSON shape) → GithubContentError,
+    the item's own failure. Wraps only that, so a bug elsewhere in our code isn't recorded as one."""
+    try:
+        yield
+    except (KeyError, TypeError, AttributeError, ValueError) as exc:
+        raise github.GithubContentError(f"Couldn't read {what} from GitHub: {exc!r}") from exc
+
+
 async def _store(kind: str, payload: dict, fetch: Callable[[github.GithubClient], Awaitable[tuple]]) -> None:
     """`fetch` → (title, text, last_edited_at), GitHub calls only; then one write session:
     upsert, or delete when the item is gone."""
@@ -148,9 +159,6 @@ async def _store(kind: str, payload: dict, fetch: Callable[[github.GithubClient]
                 title, text, last_edited_at = await fetch(client)
             except _Gone:
                 gone = True
-            except (KeyError, TypeError, AttributeError, ValueError) as exc:
-                # Decoding/assembling the item's content (bad base64, unexpected JSON shape).
-                raise github.GithubContentError(f"Couldn't read {external_id} from GitHub: {exc!r}") from exc
     except github.GithubDisconnected:
         logger.info("connection_id=%s is disconnected, skipping %s", connection_id, external_id)
         return
@@ -209,9 +217,11 @@ async def handle_github_file_updated(payload: dict) -> None:
 
     async def fetch(client):
         data = await _item(client, f"/repos/{full_name}/git/blobs/{sha}")
-        raw = data.get("content") or ""
-        content = base64.b64decode(raw) if data.get("encoding", "base64") == "base64" else raw.encode()
-        return f"{full_name} · {path}", content.decode("utf-8", errors="replace"), None
+        with _decoding(f"{full_name} · {path}"):
+            raw = data.get("content") or ""
+            content = base64.b64decode(raw) if data.get("encoding", "base64") == "base64" else raw.encode()
+            text = content.decode("utf-8", errors="replace")
+        return f"{full_name} · {path}", text, None
 
     with tracer.start_as_current_span("embed.github_file", attributes={"repo": full_name, "path": path}):
         await _store("file", payload, fetch)
@@ -224,16 +234,19 @@ async def _issue_like(kind: str, payload: dict) -> None:
         base = f"/repos/{full_name}"
         if kind == "issue":
             item = await _item(client, f"{base}/issues/{number}")
-            text = _issue_text(item, await client.all(f"{base}/issues/{number}/comments"))
+            comments = await client.all(f"{base}/issues/{number}/comments")
+            with _decoding(f"{full_name} #{number}"):
+                text = _issue_text(item, comments)
         else:
             item = await _item(client, f"{base}/pulls/{number}")
-            text = _pr_text(
-                item,
+            lists = [
                 await client.all(f"{base}/issues/{number}/comments"),
                 await client.all(f"{base}/pulls/{number}/reviews"),
                 await client.all(f"{base}/pulls/{number}/comments"),
                 await client.all(f"{base}/pulls/{number}/files"),
-            )
+            ]
+            with _decoding(f"{full_name} #{number}"):
+                text = _pr_text(item, *lists)
         return f"{full_name} #{number}: {item.get('title') or ''}", text, item.get("updated_at")
 
     span = "embed.github_issue" if kind == "issue" else "embed.github_pr"
