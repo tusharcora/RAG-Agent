@@ -41,4 +41,5 @@ else
 fi
 
 echo "-- Starting (opens your browser; Ctrl-C here to stop)"
+# AUTH_BROKER_URL (if set in your shell) reaches the app: it points Connect/sign-in at your Worker.
 exec .venv-desktop/bin/python desktop/launcher.py

@@ -4,6 +4,7 @@
 
 Needs the bundle (python desktop/build_backend.py) and Playwright's Chromium.
 Path A: local models via a fake Ollama.  Path B: API keys against local stubs.
+Path C: models already installed.  Path D: Connect and sign-in via a fake sign-in Worker.
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ BACKEND = HERE.parent / "tauri" / "src-tauri" / "resources" / "backend"
 PY = BACKEND / "python" / "bin" / "python"
 CHROMIUM = os.environ.get("CHROMIUM")  # path to a Chromium binary; unset = Playwright's own
 HOMES: list[str] = []  # every data folder this run created, for the leak check
-FAKE_PORT, APP_PORT, STUB_PORT = 11499, 47831, 47841
+FAKE_PORT, APP_PORT, STUB_PORT, BROKER_PORT = 11499, 47831, 47841, 47851
 GOOD_VOYAGE, GOOD_ANTHROPIC = "pa-good", "sk-ant-good"
 
 
@@ -311,11 +312,134 @@ def path_b() -> None:
     print("PASS path B (API keys)")
 
 
+def fake_broker(port: int) -> subprocess.Popen:
+    p = subprocess.Popen([sys.executable, str(HERE / "fake_broker.py"), "--port", str(port)])
+    try:
+        wait_http(f"http://127.0.0.1:{port}/health")
+    except BaseException:
+        p.terminate()
+        p.wait()
+        raise
+    return p
+
+
+def path_d() -> None:
+    """Connect and optional sign-in through a fake sign-in Worker; then the feature-off case."""
+    home = tempfile.mkdtemp(prefix="ka-e2e-d-", dir="/tmp")
+    os.chmod(home, 0o755)
+    HOMES.append(home)
+    ollama = broker = launcher = None
+    try:
+        ollama = fake_ollama(FAKE_PORT, models="nomic-embed-text:latest,qwen3.6:35b")
+        broker = fake_broker(BROKER_PORT)
+        launcher = Launcher(home, {
+            "OLLAMA_URL": f"http://127.0.0.1:{FAKE_PORT}",
+            "AUTH_BROKER_URL": f"http://127.0.0.1:{BROKER_PORT}",
+        })
+        with sync_playwright() as p:
+            b = launch_browser(p)
+            ctx = b.new_context()
+            page = ctx.new_page()
+            page.goto(launcher.url)
+            page.wait_for_url(re.compile(r"/setup/?$"), timeout=30000)
+            expect(page.get_by_text("yours", exact=True)).to_be_visible(timeout=10000)
+            print("D: 'Make it yours' shown first")
+            with ctx.expect_page() as popup_info:
+                page.get_by_role("button", name="Continue with Google").click()
+            popup = popup_info.value
+            expect(popup.get_by_text("Signed in as E2E Person")).to_be_visible(timeout=20000)
+            expect(popup.get_by_text("You can close this tab and go back to Knowledge Agent.")).to_be_visible()
+            popup.close()
+            print("D: Google popup landed on 'Signed in as E2E Person'")
+            # The app moves on to the next setup step by itself (models are already installed).
+            expect(page.get_by_role("heading", name="Your models are ready")).to_be_visible(timeout=20000)
+            page.get_by_role("button", name="Continue", exact=True).click()
+            expect(page.get_by_text("FINISHING SETUP")).to_be_visible(timeout=10000)
+            page.wait_for_url(re.compile(r"/connections/?$"), timeout=90000)
+            print("D: setup finished, on /connections/")
+
+            with ctx.expect_page() as popup_info:
+                page.get_by_role("button", name="Connect Notion").click()
+            popup = popup_info.value
+            expect(popup.get_by_text("Connected to Notion")).to_be_visible(timeout=20000)
+            popup.close()
+            expect(page.get_by_text("E2E Workspace").first).to_be_visible(timeout=20000)
+            print("D: Notion popup landed on 'Connected to Notion'; card shows the workspace")
+
+            expect(page.get_by_text("E2E Person").first).to_be_visible(timeout=10000)
+            print("D: sidebar shows E2E Person")
+
+            page.goto(launcher.url.rstrip("/") + "/settings/")
+            expect(page.get_by_role("heading", name="Account")).to_be_visible(timeout=20000)
+            expect(page.get_by_text("e2e@example.test")).to_be_visible()
+            page.get_by_role("button", name="Sign out").click()
+            expect(page.get_by_text("Continue with Google")).to_be_visible(timeout=10000)
+            expect(page.get_by_text("My workspace").first).to_be_visible(timeout=10000)
+            expect(page.get_by_text("E2E Person")).to_have_count(0)
+            print("D: signed out; sidebar back to 'My workspace'")
+            b.close()
+        launcher.stop()
+        launcher = None
+
+        # Same data folder, broker not configured: no sign-in offer, the Notion secret form stays.
+        launcher = Launcher(home, {"OLLAMA_URL": f"http://127.0.0.1:{FAKE_PORT}", "AUTH_BROKER_URL": ""})
+        with sync_playwright() as p:
+            b = launch_browser(p)
+            page = b.new_page()
+            page.goto(launcher.url.rstrip("/") + "/settings/")
+            expect(page.get_by_role("heading", name="Account")).to_have_count(0, timeout=10000)
+            print("D: without AUTH_BROKER_URL no Account/sign-in section")
+            b.close()
+    finally:
+        if launcher:
+            launcher.stop()
+        if broker:
+            broker.terminate()
+            broker.wait()
+        if ollama:
+            ollama.terminate()
+            ollama.wait()
+    print("PASS path D (Connect and sign-in)")
+
+
+def path_d_off() -> None:
+    """Fresh home, no AUTH_BROKER_URL: setup has no 'Make it yours' and Notion shows the secret form."""
+    home = tempfile.mkdtemp(prefix="ka-e2e-e-", dir="/tmp")
+    os.chmod(home, 0o755)
+    HOMES.append(home)
+    ollama = launcher = None
+    try:
+        ollama = fake_ollama(FAKE_PORT, models="nomic-embed-text:latest,qwen3.6:35b")
+        launcher = Launcher(home, {"OLLAMA_URL": f"http://127.0.0.1:{FAKE_PORT}", "AUTH_BROKER_URL": ""})
+        with sync_playwright() as p:
+            b = launch_browser(p)
+            page = b.new_page()
+            page.goto(launcher.url)
+            page.wait_for_url(re.compile(r"/setup/?$"), timeout=30000)
+            expect(page.get_by_role("heading", name="Your models are ready")).to_be_visible(timeout=20000)
+            assert page.get_by_text("Make it", exact=False).count() == 0
+            page.get_by_role("button", name="Continue", exact=True).click()
+            page.wait_for_url(re.compile(r"/connections/?$"), timeout=90000)
+            expect(page.get_by_label("Notion integration secret")).to_be_visible(timeout=20000)
+            assert page.get_by_role("button", name="Connect Notion").count() == 0
+            print("D(off): no 'Make it yours'; Notion shows the secret form")
+            b.close()
+    finally:
+        if launcher:
+            launcher.stop()
+        if ollama:
+            ollama.terminate()
+            ollama.wait()
+    print("PASS path D-off (feature off)")
+
+
 def main() -> int:
     try:
         path_a()
         path_c()
         path_b()
+        path_d()
+        path_d_off()
     finally:
         time.sleep(1)
         left = sorted({pid for h in HOMES for pid in leftovers(h)})

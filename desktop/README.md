@@ -73,8 +73,27 @@ python desktop/e2e/run_setup_e2e.py
 ```
 
 Runs the bundled launcher and drives the first-run setup in a browser: path A (local
-models, against `e2e/fake_ollama.py`) and path B (API keys, against local Voyage and
-Anthropic stubs). Both should print `PASS`, and the final "leftover processes" line should say `none`.
+models, against `e2e/fake_ollama.py`), path B (API keys, against local Voyage and
+Anthropic stubs), path C (models already installed) and path D (Connect and sign-in
+against `e2e/fake_broker.py`, a stand-in for the sign-in Worker, plus the feature-off
+case). All should print `PASS`, and the final "leftover processes" line should say `none`.
+
+## Connect and sign-in
+
+Connecting Notion or Jira, and the optional Google/GitHub sign-in, go through a small
+sign-in service (a Cloudflare Worker, source in `desktop/broker/`, see
+[`broker/README.md`](broker/README.md)). Your browser opens the provider's page; the
+Worker holds the provider client secrets and exchanges the code, then hands the result
+back to the app on `127.0.0.1` once, and only to the app that started the flow.
+
+- The Worker sees the provider's sign-in redirect (so it handles the one-time code and the
+  resulting token or name and email for about two minutes, encrypted) and nothing else.
+  It never sees your documents, chats, queries or models, and it logs no codes, tokens or identities.
+- The app stores tokens on this computer, encrypted. Signing in with Google or GitHub only
+  sets your name and email on the local profile; it is not access control.
+- To use your own Worker (or a local `wrangler dev`) with a dev build, set `AUTH_BROKER_URL`
+  before starting: `AUTH_BROKER_URL=https://your-worker.example.workers.dev desktop/start-dev.command`.
+  Unset or empty turns the feature off: no sign-in offer, and Notion uses the pasted-secret form.
 
 ## Mac checklist (manual, before releasing)
 
@@ -86,6 +105,8 @@ Anthropic stubs). Both should print `PASS`, and the final "leftover processes" l
 6. Connect Notion, Sync now, ask a question.
 7. Quit with Cmd+Q; `pgrep postgres` prints nothing.
 8. Reopen: no setup, straight to the app with history intact.
+9. With the real Worker: Connect Notion, pick pages, the card shows your workspace and syncs.
+10. With the real Worker: sign in with Google from Settings, the sidebar shows your name; Sign out puts it back.
 
 Troubleshooting: the backend's output is in `backend.log` in the app's log folder
 (macOS: `~/Library/Logs/com.tusharcora.knowledgeagent/backend.log`).
