@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.routes.sync import JIRA_SEARCH_URL_TMPL, NOTION_SEARCH_URL, _request
 from app.core.auth import AuthContext, require_auth, require_role
 from app.core.config import settings
-from app.core.crypto import decrypt_token
+from app.core.crypto import decrypt_token, encrypt_token
 from app.core.db import get_session
 from app.integrations.jira_auth import ensure_fresh_token
 from app.models.event_log import EventLog
@@ -269,3 +269,56 @@ async def preview(
             return ConnectionPreview(visible_count=total, truncated=False)
 
         raise HTTPException(status_code=400, detail=f"Unknown provider: {connection.provider}")
+
+
+class NotionTokenRequest(BaseModel):
+    token: str
+
+
+@router.post("/notion/token")
+async def connect_notion_with_token(
+    request: NotionTokenRequest,
+    auth: AuthContext = Depends(require_auth),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Connects Notion with an internal integration secret instead of OAuth.
+    The desktop app has no public address for an OAuth redirect, so the user
+    creates an internal integration at notion.so/profile/integrations, shares
+    pages with it, and pastes its secret here. Sync then works exactly as for
+    an OAuth connection (both are bearer tokens to the same API)."""
+    require_role(auth, "owner", "admin")
+    token = request.token.strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="Paste the integration secret.")
+
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            resp = await client.get(
+                "https://api.notion.com/v1/users/me",
+                headers={"Authorization": f"Bearer {token}", "Notion-Version": settings.notion_api_version},
+            )
+    except httpx.HTTPError:
+        raise HTTPException(status_code=502, detail="Couldn't reach Notion. Check your internet connection.")
+    if resp.status_code == 401:
+        raise HTTPException(status_code=400, detail="Notion rejected that secret. Copy it again from notion.so/profile/integrations.")
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"Notion returned {resp.status_code}.")
+    bot = resp.json().get("bot") or {}
+
+    connection = (
+        await session.execute(
+            select(OAuthConnection).where(OAuthConnection.provider == "notion", OAuthConnection.org_id == auth.org_id)
+        )
+    ).scalar_one_or_none()
+    if connection is None:
+        connection = OAuthConnection(id=uuid.uuid4(), org_id=auth.org_id, provider="notion", access_token="")
+        session.add(connection)
+    connection.workspace_id = bot.get("workspace_id") or ""
+    connection.workspace_name = bot.get("workspace_name") or "Notion workspace"
+    connection.access_token = encrypt_token(token)
+    connection.bot_id = resp.json().get("id")
+    connection.refresh_token = None
+    connection.expires_at = None
+    connection.updated_at = datetime.now(timezone.utc)
+    await session.commit()
+    return {"connected": True, "workspace_name": connection.workspace_name}

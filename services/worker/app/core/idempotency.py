@@ -6,9 +6,15 @@ _redis: redis.Redis | None = None
 
 
 def get_redis() -> redis.Redis:
+    # REDIS_URL=memory:// (desktop mode): in-process fake, same async API.
     global _redis
     if _redis is None:
-        _redis = redis.from_url(settings.redis_url, decode_responses=True)
+        if settings.redis_url.startswith("memory://"):
+            from fakeredis import FakeAsyncRedis
+
+            _redis = FakeAsyncRedis(decode_responses=True)
+        else:
+            _redis = redis.from_url(settings.redis_url, decode_responses=True)
     return _redis
 
 

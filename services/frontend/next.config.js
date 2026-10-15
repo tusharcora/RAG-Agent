@@ -6,6 +6,19 @@
 // cross-port requests to localhost. Set NEXT_PUBLIC_API_URL to bypass it.
 const API_PROXY_TARGET = process.env.API_PROXY_TARGET || "http://localhost:8000";
 
+// DESKTOP_BUILD=1 produces a static export (out/) that the desktop app's
+// FastAPI process serves at "/", with the API on the same origin at "/api" —
+// so there's no Next server and no proxy in the desktop build.
+const DESKTOP = process.env.DESKTOP_BUILD === "1";
+
+const desktopConfig = {
+  reactStrictMode: true,
+  output: "export",
+  trailingSlash: true,
+  images: { unoptimized: true },
+  env: { NEXT_PUBLIC_DESKTOP: "1" },
+};
+
 const nextConfig = {
   reactStrictMode: true,
   experimental: {
@@ -20,4 +33,4 @@ const nextConfig = {
   },
 };
 
-module.exports = nextConfig;
+module.exports = DESKTOP ? desktopConfig : nextConfig;

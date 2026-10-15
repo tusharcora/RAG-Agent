@@ -17,11 +17,13 @@ async def lifespan(app: FastAPI):
     setup_telemetry()
     await init_engine()
     await ensure_schema()
-    await get_queue_connection()
+    if settings.queue_backend == "rabbitmq":
+        await get_queue_connection()
     auto_sync.start()
     yield
     await auto_sync.stop()
-    await close_queue_connection()
+    if settings.queue_backend == "rabbitmq":
+        await close_queue_connection()
     await dispose_engine()
 
 

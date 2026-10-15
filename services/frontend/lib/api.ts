@@ -20,7 +20,9 @@ import type {
 } from "./types";
 
 // Defaults to the same-origin /api proxy defined in next.config.js.
-export const API_BASE = process.env.NEXT_PUBLIC_API_URL || "/api";
+// The desktop build always talks to its own origin, whatever .env.local says.
+export const API_BASE =
+  process.env.NEXT_PUBLIC_DESKTOP === "1" ? "/api" : process.env.NEXT_PUBLIC_API_URL || "/api";
 
 // No API key header anymore — auth is the httpOnly `session` cookie set by
 // POST /auth/login, sent automatically via `credentials: "include"` below.
@@ -113,6 +115,16 @@ export function logout() {
 
 export function me() {
   return get<MeResponse>("/auth/me");
+}
+
+/** Desktop app only: a session for this computer's single local account. */
+export function localSession() {
+  return post<MeResponse>("/auth/local");
+}
+
+/** Desktop app only: connect Notion with an internal integration secret. */
+export function connectNotionToken(token: string) {
+  return post<{ workspace_name: string }>("/connections/notion/token", { token });
 }
 
 export function getOrgMembers() {

@@ -115,6 +115,8 @@ async def embed_texts(texts: list[str], input_type: Literal["document", "query"]
     """Raw httpx against Voyage's REST API rather than the voyageai SDK —
     matches this repo's convention of no dedicated SDK wrappers except the
     officially-recommended `anthropic` package."""
+    if settings.embedding_provider == "ollama":
+        return await _embed_ollama(texts, input_type)
     # Held only around the actual in-flight request, not the tenacity backoff
     # sleep on a 429 — releasing it during backoff lets other pending
     # embed_texts() calls take their turn instead of all queuing up behind
@@ -134,3 +136,38 @@ async def embed_texts(texts: list[str], input_type: Literal["document", "query"]
             data = resp.json()
     await _record_usage(data.get("usage", {}).get("total_tokens", 0))
     return [item["embedding"] for item in data["data"]]
+
+
+# --- Ollama (desktop mode, EMBEDDING_PROVIDER=ollama) -------------------------
+# nomic-embed-text was trained with Matryoshka representation learning, so its
+# 768-d vectors can be cut to the first N dimensions and re-normalized with
+# little quality loss. Cutting to settings.embedding_dimensions (512) keeps the
+# existing vector(512) column and HNSW index unchanged.
+_NOMIC_PREFIX = {"document": "search_document: ", "query": "search_query: "}
+
+
+async def _embed_ollama(texts: list[str], input_type: Literal["document", "query"]) -> list[list[float]]:
+    prefix = _NOMIC_PREFIX[input_type] if "nomic" in settings.ollama_embed_model else ""
+    async with httpx.AsyncClient(timeout=120) as client:
+        try:
+            resp = await client.post(
+                f"{settings.ollama_url.rstrip('/')}/api/embed",
+                json={"model": settings.ollama_embed_model, "input": [prefix + t for t in texts]},
+            )
+        except httpx.ConnectError as exc:
+            raise RuntimeError(f"Ollama isn't running at {settings.ollama_url}") from exc
+        if resp.status_code == 404:
+            raise RuntimeError(
+                f"Ollama model {settings.ollama_embed_model!r} isn't installed. Run: ollama pull {settings.ollama_embed_model}"
+            )
+        resp.raise_for_status()
+        vectors = resp.json()["embeddings"]
+    dims = settings.embedding_dimensions
+    out = []
+    for v in vectors:
+        if len(v) < dims:
+            raise RuntimeError(f"{settings.ollama_embed_model} returns {len(v)} dimensions; {dims} are needed")
+        cut = v[:dims]
+        norm = sum(x * x for x in cut) ** 0.5 or 1.0
+        out.append([x / norm for x in cut])
+    return out

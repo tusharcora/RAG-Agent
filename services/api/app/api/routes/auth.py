@@ -37,8 +37,8 @@ def _set_session_cookie(response: Response, token: str) -> None:
         key=COOKIE_NAME,
         value=token,
         httponly=True,
-        secure=True,
-        samesite="none",
+        secure=settings.cookie_secure,
+        samesite=settings.cookie_samesite,
         max_age=settings.jwt_expires_seconds,
     )
 
@@ -312,3 +312,43 @@ async def revoke_service_token(
         raise HTTPException(status_code=404, detail="Service token not found")
     token.revoked_at = datetime.now(timezone.utc)
     await session.commit()
+
+
+LOCAL_EMAIL = "you@this-computer.local"
+
+
+@router.post("/local")
+async def local_session(response: Response, session: AsyncSession = Depends(get_session)) -> MeResponse:
+    """Desktop mode only: there's one person on this machine, so instead of a
+    sign-up/log-in screen the app gets a session for a local owner account,
+    created on first use. 404 in server mode, so it can't be used to mint
+    sessions on a shared deployment."""
+    if settings.app_mode != "desktop":
+        raise HTTPException(status_code=404, detail="Not found")
+
+    user = (await session.execute(select(User).where(User.email == LOCAL_EMAIL))).scalar_one_or_none()
+    if user is None:
+        user = User(id=uuid.uuid4(), email=LOCAL_EMAIL, password_hash=None, display_name=None)
+        session.add(user)
+        await session.flush()
+        org = Organization(id=uuid.uuid4(), name="My workspace", slug=_slugify("my-workspace"))
+        session.add(org)
+        await session.flush()
+        session.add(OrgMember(id=uuid.uuid4(), org_id=org.id, user_id=user.id, role="owner"))
+        await session.commit()
+        member_org, role = org, "owner"
+    else:
+        member = (
+            await session.execute(select(OrgMember).where(OrgMember.user_id == user.id).limit(1))
+        ).scalar_one()
+        member_org, role = await session.get(Organization, member.org_id), member.role
+
+    _set_session_cookie(response, create_access_token(user.id, member_org.id, role))
+    return MeResponse(
+        user_id=str(user.id),
+        org_id=str(member_org.id),
+        org_name=member_org.name,
+        role=role,
+        email=user.email,
+        display_name=user.display_name,
+    )

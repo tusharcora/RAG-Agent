@@ -47,6 +47,10 @@ STATEMENTS = [
     "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS cited_indices JSONB",
     "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS model TEXT",
     "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS elapsed_ms INTEGER",
+    # 013_local_queue.sql
+    "ALTER TABLE event_log ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE event_log ADD COLUMN IF NOT EXISTS available_at TIMESTAMPTZ NOT NULL DEFAULT now()",
+    "CREATE INDEX IF NOT EXISTS idx_event_log_queue ON event_log (status, available_at)",
 ]
 
 

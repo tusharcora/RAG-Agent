@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { me as fetchMe, logout as apiLogout } from "./api";
+import { me as fetchMe, logout as apiLogout, localSession } from "./api";
 import type { MeResponse } from "./types";
 
 interface AuthState {
@@ -22,6 +22,13 @@ const AuthContext = createContext<AuthState | null>(null);
 const PUBLIC_PATHS = new Set(["/", "/login", "/signup"]);
 const AUTH_ONLY_PATHS = new Set(["/login", "/signup"]);
 
+// The desktop app is single-user: there's no sign-in screen, the API hands
+// this computer's one local account a session on request.
+export const IS_DESKTOP = process.env.NEXT_PUBLIC_DESKTOP === "1";
+
+// The desktop build exports with trailing slashes ("/login/").
+const normalize = (p: string) => (p.length > 1 ? p.replace(/\/+$/, "") : p);
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<MeResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -30,7 +37,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   async function refresh() {
     try {
-      const current = await fetchMe();
+      const current = IS_DESKTOP ? await localSession() : await fetchMe();
       setUser(current);
     } catch {
       setUser(null);
@@ -46,12 +53,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (loading) return;
-    const isPublic = PUBLIC_PATHS.has(pathname);
+    const path = normalize(pathname);
+    if (IS_DESKTOP) {
+      if (AUTH_ONLY_PATHS.has(path)) router.replace("/");
+      return;
+    }
+    const isPublic = PUBLIC_PATHS.has(path);
     if (!user && !isPublic) router.replace("/login");
-    if (user && AUTH_ONLY_PATHS.has(pathname)) router.replace("/");
+    if (user && AUTH_ONLY_PATHS.has(path)) router.replace("/");
   }, [loading, user, pathname, router]);
 
   async function logout() {
+    if (IS_DESKTOP) return; // nothing to sign out of on a single-user install
     await apiLogout();
     setUser(null);
     router.replace("/login");

@@ -6,7 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { AlertTriangle } from "@untitledui/icons";
 import { getConnections, getDlqEvents, getDocuments, getEvents, getVoyageUsage } from "@/lib/api";
 import { useInterval } from "@/hooks/useInterval";
-import { useAuth } from "@/lib/auth-context";
+import { IS_DESKTOP, useAuth } from "@/lib/auth-context";
 import { toast } from "@/lib/toast";
 import { providerLabel, timeAgo } from "@/lib/format";
 import { ConnectionCard } from "@/components/connections/ConnectionCard";
@@ -136,7 +136,7 @@ function ConnectionsPageContent() {
           ))
         )}
 
-        {isAdmin && voyageUsage && (
+        {isAdmin && voyageUsage && !IS_DESKTOP && (
           <section className="flex flex-col gap-[22px] rounded-[20px] bg-inv-bg p-6 text-inv-ink">
             <span className="font-mono text-[11px] tracking-[0.1em] text-inv-ink2">EMBEDDING BUDGET · VOYAGE</span>
             <div className="flex items-baseline gap-2">

@@ -14,7 +14,7 @@ import {
   Settings01,
   Trash01,
 } from "@untitledui/icons";
-import { useAuth } from "@/lib/auth-context";
+import { IS_DESKTOP, useAuth } from "@/lib/auth-context";
 import { deleteSession, getSessions } from "@/lib/api";
 import { SESSIONS_CHANGED_EVENT } from "@/lib/format";
 import { useInterval } from "@/hooks/useInterval";
@@ -84,14 +84,16 @@ export default function Sidebar() {
               <p className="truncate text-[13px] font-medium text-ink-100">{user.org_name}</p>
               <p className="truncate text-xs capitalize text-ink-500">{user.role}</p>
             </div>
-            <button
-              type="button"
-              aria-label="Log out"
-              onClick={() => logout()}
-              className="rounded-md p-1.5 text-ink-500 transition hover:bg-ink-800 hover:text-ink-100"
-            >
-              <LogOut01 className="h-4 w-4" aria-hidden="true" />
-            </button>
+            {!IS_DESKTOP && (
+              <button
+                type="button"
+                aria-label="Log out"
+                onClick={() => logout()}
+                className="rounded-md p-1.5 text-ink-500 transition hover:bg-ink-800 hover:text-ink-100"
+              >
+                <LogOut01 className="h-4 w-4" aria-hidden="true" />
+              </button>
+            )}
           </div>
         </>
       ) : (

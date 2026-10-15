@@ -12,6 +12,21 @@ class Settings(BaseSettings):
     rabbitmq_url: str = "amqp://guest:guest@localhost:5672/"
 
     otel_exporter_otlp_endpoint: str = "http://localhost:4317"
+    otel_enabled: bool = True
+
+    # --- Desktop ("local mode", see desktop/README.md) ---
+    # "server": the Docker deployment. "desktop": everything on one machine,
+    # started by desktop/launcher.py (embedded Postgres, no RabbitMQ/Redis).
+    app_mode: str = "server"
+    # "rabbitmq" (server) or "postgres": jobs are event_log rows the worker
+    # claims with FOR UPDATE SKIP LOCKED, so no broker is needed.
+    queue_backend: str = "rabbitmq"
+    # "voyage" (hosted) or "ollama" (local, nomic-embed-text cut to
+    # embedding_dimensions, which nomic's Matryoshka training supports).
+    embedding_provider: str = "voyage"
+    ollama_url: str = "http://127.0.0.1:11434"
+    ollama_embed_model: str = "nomic-embed-text"
+    ollama_chat_model: str = "llama3.2"  # desktop default answer model
     otel_service_name: str = "api"
 
     cors_origins: list[str] = ["http://localhost:3001", "http://localhost:3000"]
@@ -85,6 +100,9 @@ class Settings(BaseSettings):
     # exist — Settings.__init__ below fails closed outside `environment == "local"`.
     jwt_secret: str = ""
     jwt_algorithm: str = "HS256"
+    # Desktop mode serves the UI and API from one http://127.0.0.1 origin.
+    cookie_secure: bool = True
+    cookie_samesite: str = "none"
     jwt_expires_seconds: int = 60 * 60 * 24  # 24h, no refresh-token rotation in v1
 
     def model_post_init(self, __context) -> None:

@@ -76,7 +76,14 @@ def _out(active: OrgLlmSettings | None, creds: dict[str, OrgLlmCredential]) -> L
         )
         for p in CONFIGURABLE
     }
-    provider = active.provider if active else "gemini"
+    desktop = settings.app_mode == "desktop"
+    provider = active.provider if active else ("local" if desktop else "gemini")
+    if desktop and active is None and not creds.get("local"):
+        # Mirror llm.load_llm_config's desktop default so Settings shows what
+        # answers actually come from: the local Ollama.
+        providers["local"] = ProviderConfigOut(
+            model=settings.ollama_chat_model, base_url=f"{settings.ollama_url}/v1", has_api_key=False, api_key_hint=None
+        )
     current = providers.get(provider)
     return LlmSettingsOut(
         provider=provider,

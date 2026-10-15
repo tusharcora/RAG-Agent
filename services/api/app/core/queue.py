@@ -101,6 +101,12 @@ async def publish_event(
     session.add(event)
     await session.commit()
 
+    if settings.queue_backend == "postgres":
+        # Desktop mode: the committed "received" row IS the job; the worker
+        # claims it straight from event_log (see the worker's local_queue.py).
+        logger.info("Queued event routing_key=%s dedupe_key=%s event_log_id=%s", routing_key, dedupe_key, event.id)
+        return event.id
+
     try:
         connection = await get_queue_connection()
         channel = await connection.channel()

@@ -1,0 +1,6 @@
+# One environment for both api and worker in desktop mode (they still run as
+# separate processes). Python 3.12 max: pgserver ships wheels for 3.9–3.12.
+-r ../services/api/requirements.txt
+pgserver==0.1.4
+fakeredis==2.26.2
+platformdirs>=4.2

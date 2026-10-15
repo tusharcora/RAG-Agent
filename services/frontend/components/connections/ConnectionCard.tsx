@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   API_BASE,
+  connectNotionToken,
   getConnectionMembers,
   getConnectionPreview,
   getOrgMembers,
@@ -12,7 +13,7 @@ import {
 } from "@/lib/api";
 import { SourceIcon } from "@/components/icons/SourceIcon";
 import { SearchLg } from "@untitledui/icons";
-import { useAuth } from "@/lib/auth-context";
+import { IS_DESKTOP, useAuth } from "@/lib/auth-context";
 import { toast } from "@/lib/toast";
 import type { ConnectionPreview, ConnectionStatus, OrgMember } from "@/lib/types";
 import { Badge } from "@/components/base/badges/badges";
@@ -39,6 +40,7 @@ export function ConnectionCard({
   isPolling?: boolean;
 }) {
   const [syncing, setSyncing] = useState(false);
+  const [editingSecret, setEditingSecret] = useState(false);
   const [preview, setPreview] = useState<ConnectionPreview | null>(null);
   const { user } = useAuth();
   const isAdmin = user?.role === "owner" || user?.role === "admin";
@@ -169,7 +171,12 @@ export function ConnectionCard({
             <Button color="secondary" size="sm" isLoading={syncing} onPress={handleSync}>
               Sync now
             </Button>
-            {status.provider === "notion" && isAdmin && (
+            {status.provider === "notion" && isAdmin && IS_DESKTOP && (
+              <Button color="tertiary" size="sm" onPress={() => setEditingSecret((v) => !v)}>
+                {editingSecret ? "Cancel" : "Replace secret"}
+              </Button>
+            )}
+            {status.provider === "notion" && isAdmin && !IS_DESKTOP && (
               // Re-running Notion's OAuth flow reopens its page picker; the
               // callback updates this org's existing connection in place.
               <Button
@@ -186,6 +193,8 @@ export function ConnectionCard({
               </Badge>
             )}
           </>
+        ) : IS_DESKTOP && status.provider === "notion" ? null : IS_DESKTOP ? (
+          <p className="text-xs text-ink-500">Jira isn&apos;t available in the desktop app yet.</p>
         ) : (
           <Button color="primary" size="sm" href={`${API_BASE}/oauth/${status.provider}/authorize`}>
             Connect
@@ -193,8 +202,80 @@ export function ConnectionCard({
         )}
       </div>
 
-      {status.connected && isAdmin && status.id && <AccessControl connectionId={status.id} status={status} />}
+      {IS_DESKTOP && status.provider === "notion" && (!status.connected || editingSecret) && (
+        <NotionSecretForm
+          onConnected={() => {
+            setEditingSecret(false);
+            onSynced();
+          }}
+        />
+      )}
+
+      {!IS_DESKTOP && status.connected && isAdmin && status.id && (
+        <AccessControl connectionId={status.id} status={status} />
+      )}
     </section>
+  );
+}
+
+// Desktop installs have no public callback URL for Notion's OAuth redirect,
+// so Notion is connected with an internal integration's secret instead.
+function NotionSecretForm({ onConnected }: { onConnected: () => void }) {
+  const [secret, setSecret] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!secret.trim()) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await connectNotionToken(secret.trim());
+      setSecret("");
+      toast.success(`Connected to ${res.workspace_name}`, "Press Sync now to pull in your pages.");
+      onConnected();
+    } catch (err) {
+      setError((err as { detail?: string })?.detail ?? "Couldn't connect with that secret.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form onSubmit={submit} className="flex flex-col gap-3 border-t border-ink-800 pt-4">
+      <ol className="list-decimal space-y-1 pl-4 text-xs leading-relaxed text-ink-400">
+        <li>
+          Create an internal integration at{" "}
+          <a
+            href="https://www.notion.so/profile/integrations"
+            target="_blank"
+            rel="noreferrer"
+            className="text-ink-200 underline underline-offset-2"
+          >
+            notion.so/profile/integrations
+          </a>{" "}
+          and copy its secret.
+        </li>
+        <li>In Notion, open each page to include, then ••• → Connections → add the integration.</li>
+        <li>Paste the secret here. It stays on this computer, encrypted.</li>
+      </ol>
+      <div className="flex gap-2">
+        <input
+          type="password"
+          autoComplete="off"
+          value={secret}
+          onChange={(e) => setSecret(e.target.value)}
+          placeholder="ntn_…"
+          aria-label="Notion integration secret"
+          className="h-9 min-w-0 flex-1 rounded-lg border border-ink-700 bg-ink-950 px-3 font-mono text-sm text-ink-100 outline-none focus:border-ink-500"
+        />
+        <Button type="submit" color="primary" size="sm" isLoading={saving} isDisabled={!secret.trim()}>
+          Connect
+        </Button>
+      </div>
+      {error && <p className="text-xs text-error-primary">{error}</p>}
+    </form>
   );
 }
 

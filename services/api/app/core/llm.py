@@ -37,7 +37,18 @@ OPENAI_URL = "https://api.openai.com/v1"
 ANTHROPIC_VERSION = "2023-06-01"
 MAX_OUTPUT_TOKENS = 4096
 
-_genai_client = genai.Client(api_key=settings.google_api_key)
+_genai_client: genai.Client | None = None
+
+
+def _gemini() -> genai.Client:
+    # Built on first use: the SDK refuses to construct without a key, and the
+    # desktop app runs fine without one (answers come from a local model).
+    global _genai_client
+    if _genai_client is None:
+        if not settings.google_api_key:
+            raise LlmError("The built-in Gemini model needs a Google API key. Pick another model in Settings.")
+        _genai_client = genai.Client(api_key=settings.google_api_key)
+    return _genai_client
 
 
 class LlmError(Exception):
@@ -64,6 +75,9 @@ class LlmConfig:
 
 async def load_llm_config(session: AsyncSession, org_id: uuid.UUID) -> LlmConfig:
     active = await session.get(OrgLlmSettings, org_id)
+    if active is None and settings.app_mode == "desktop":
+        # Desktop default: the local Ollama the app already uses for embeddings.
+        return LlmConfig(provider="local", model=settings.ollama_chat_model, base_url=f"{settings.ollama_url}/v1")
     if active is None or active.provider == "gemini":
         return LlmConfig()
     cred = await session.get(OrgLlmCredential, (org_id, active.provider))
@@ -109,7 +123,7 @@ def _is_rate_limited(exc: BaseException) -> bool:
 async def _open_gemini_stream(system: str, contents: list[genai_types.Content]):
     # Only opening the stream is retried; once deltas may be on the wire a
     # failure surfaces as an error event instead of a silent retry.
-    return await _genai_client.aio.models.generate_content_stream(
+    return await _gemini().aio.models.generate_content_stream(
         model=settings.query_model,
         contents=contents,
         config=genai_types.GenerateContentConfig(system_instruction=system, max_output_tokens=MAX_OUTPUT_TOKENS),

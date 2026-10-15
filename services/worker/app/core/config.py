@@ -12,6 +12,20 @@ class Settings(BaseSettings):
     rabbitmq_url: str = "amqp://guest:guest@localhost:5672/"
 
     otel_exporter_otlp_endpoint: str = "http://localhost:4317"
+    otel_enabled: bool = True
+
+    # --- Desktop ("local mode", see desktop/README.md) ---
+    # "server": the Docker deployment. "desktop": everything on one machine,
+    # started by desktop/launcher.py (embedded Postgres, no RabbitMQ/Redis).
+    app_mode: str = "server"
+    # "rabbitmq" (server) or "postgres": jobs are event_log rows the worker
+    # claims with FOR UPDATE SKIP LOCKED, so no broker is needed.
+    queue_backend: str = "rabbitmq"
+    # "voyage" (hosted) or "ollama" (local, nomic-embed-text cut to
+    # embedding_dimensions, which nomic's Matryoshka training supports).
+    embedding_provider: str = "voyage"
+    ollama_url: str = "http://127.0.0.1:11434"
+    ollama_embed_model: str = "nomic-embed-text"
     otel_service_name: str = "worker"
 
     # How many events this worker consumes concurrently. Bump for I/O-bound

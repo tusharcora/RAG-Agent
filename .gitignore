@@ -7,3 +7,9 @@ node_modules/
 *.log
 .DS_Store
 .claude/worktrees/
+
+# Desktop app build output
+services/frontend/out/
+.venv-desktop/
+desktop/build/
+desktop/dist/

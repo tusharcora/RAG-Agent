@@ -124,6 +124,13 @@ async def main() -> None:
 
     setup_telemetry()
     await init_engine()
+
+    if settings.queue_backend == "postgres":
+        from app.local_queue import run as run_local_queue
+
+        await run_local_queue()
+        return
+
     # See services/api/app/core/queue.py's get_queue_connection() for why the
     # initial connect (not just connect_robust's post-connect reconnection
     # logic) needs its own retry — docker-compose's service_healthy dependency

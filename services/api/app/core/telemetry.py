@@ -20,6 +20,10 @@ def setup_telemetry() -> None:
     so a single event can be traced end-to-end: API receipt -> queue publish
     -> worker consume -> DB write.
     """
+    if not settings.otel_enabled:
+        # Desktop mode has no collector to export to; spans stay in-process.
+        logging.basicConfig(level=settings.log_level)
+        return
     resource = Resource.create({SERVICE_NAME: settings.otel_service_name})
     provider = TracerProvider(resource=resource)
     exporter = OTLPSpanExporter(endpoint=settings.otel_exporter_otlp_endpoint, insecure=True)
