@@ -28,7 +28,10 @@ import subprocess
 import sys
 import time
 import urllib.request
+import threading
 import webbrowser
+from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -195,7 +198,10 @@ def child_env(base_url: str, db_uri: str, home: Path, paths: Paths) -> dict:
             "PYTHONUNBUFFERED": "1",
         }
     )
+    # Provider keys come only from this install's secrets.json, never from
+    # whatever shell or app started the launcher.
     for secret_key, env_key in (("voyage_api_key", "VOYAGE_API_KEY"), ("google_api_key", "GOOGLE_API_KEY")):
+        env.pop(env_key, None)
         if keys.get(secret_key):
             env[env_key] = keys[secret_key]
     return env
@@ -231,77 +237,332 @@ def running_instance(home: Path) -> str | None:
     return None
 
 
+# --- Supervisor -----------------------------------------------------------
+
+# The API exits with this code to ask for a restart (after first-run setup
+# changes its env). EX_TEMPFAIL from sysexits.h.
+RESTART_CODE = 75
+LOG_LINES = 40
+
+
+class Supervisor:
+    """Runs the child processes, restarts them on request and tears
+    everything down exactly once.
+
+    `commands` maps a name to (argv, cwd) and must include "api"; the API is
+    the one health-checked and the only one allowed to ask for a restart.
+    `env_factory` is called on every (re)start, so a restart picks up config
+    the API just saved. `on_stop` runs once, after every child is gone — it is
+    where the launcher stops Postgres, which a restart never touches.
+    """
+
+    def __init__(
+        self,
+        commands: dict[str, tuple[list[str], Path]],
+        env_factory: Callable[[], dict],
+        health_url: str,
+        on_stop: Callable[[], None],
+        startup_timeout: float = 60,
+    ):
+        if "api" not in commands:
+            raise ValueError("commands must include 'api'")
+        self.commands = commands
+        self.env_factory = env_factory
+        self.health_url = health_url
+        self.on_stop = on_stop
+        self.startup_timeout = startup_timeout
+        self.logs: dict[str, deque[str]] = {name: deque(maxlen=LOG_LINES) for name in commands}
+        self.procs: dict[str, subprocess.Popen] = {}
+        self._readers: dict[str, threading.Thread] = {}
+        self._quit = threading.Event()
+        self._lock = threading.RLock()
+        self._print_lock = threading.Lock()
+        self._stopped = False
+        self._handlers_installed = False
+        self._old_handlers: dict[int, object] = {}
+
+    # -- public --
+
+    @property
+    def stop_requested(self) -> bool:
+        return self._quit.is_set()
+
+    def request_stop(self) -> None:
+        """Ask run() to shut down and return 0. Safe from any thread or a
+        signal handler."""
+        self._quit.set()
+
+    def install_handlers(self, lifeline: bool) -> None:
+        """SIGINT/SIGTERM (and stdin EOF when `lifeline`) request a clean
+        stop. Idempotent; main() calls it before start() so a quit during
+        startup is honoured too. Signal handlers need the main thread and are
+        skipped elsewhere (tests)."""
+        if self._handlers_installed:
+            return
+        self._handlers_installed = True
+        if threading.current_thread() is threading.main_thread():
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                self._old_handlers[sig] = signal.signal(sig, lambda *_: self.request_stop())
+        if lifeline:
+            threading.Thread(target=self._watch_stdin, name="lifeline", daemon=True).start()
+
+    def start(self) -> None:
+        """Spawn every child with a fresh env and wait for the API's health
+        check. On failure the children are terminated and RuntimeError
+        carries the API's last output. Returns early if a stop is requested."""
+        with self._lock:
+            if self._stopped:
+                return
+            self._spawn(self.env_factory())
+        try:
+            self._wait_healthy()
+        except RuntimeError:
+            self._terminate_children()
+            raise
+
+    def run(self, lifeline: bool) -> int:
+        """Block until shutdown. 0 for a requested stop (signal, lifeline EOF,
+        request_stop), 1 when a child dies or a restart fails. Always ends
+        with stop()."""
+        self.install_handlers(lifeline)
+        try:
+            while True:
+                if self._quit.wait(0.25):
+                    self._say("Stopping…")
+                    return 0
+                api = self.procs.get("api")
+                if api is not None and api.poll() == RESTART_CODE:
+                    self._drain("api")
+                    self._say("Restarting the API and worker…")
+                    self._terminate_children()
+                    try:
+                        self.start()
+                    except RuntimeError as exc:
+                        self._say(f"Error: {exc}")
+                        return 1
+                    if not self._quit.is_set():
+                        self._say("Restarted.")
+                    continue
+                for name, proc in self.procs.items():
+                    if proc.poll() is not None:
+                        self._drain(name)
+                        self._say(f"The {name} process stopped (exit code {proc.returncode}); shutting down.")
+                        return 1
+        finally:
+            self.stop()
+            self._restore_handlers()
+
+    def stop(self) -> None:
+        """Terminate every child (10 s grace, then kill), then on_stop().
+        Idempotent."""
+        with self._lock:
+            if self._stopped:
+                return
+            self._stopped = True
+            self._quit.set()
+            try:
+                self._terminate_children()
+            finally:
+                self.on_stop()
+
+    # -- internals --
+
+    def _say(self, message: str) -> None:
+        with self._print_lock:
+            try:
+                print(message, flush=True)
+            except (OSError, ValueError):  # our stdout is gone (parent closed the pipe)
+                pass
+
+    def _spawn(self, env: dict) -> None:
+        if os.name == "nt":
+            extra = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+        else:
+            # Own session: a terminal Ctrl-C reaches only the launcher, which
+            # then stops the children in order instead of racing them.
+            extra = {"start_new_session": True}
+        for name, (argv, cwd) in self.commands.items():
+            proc = subprocess.Popen(
+                argv,
+                cwd=cwd,
+                env=env,
+                stdin=subprocess.DEVNULL,  # stdin belongs to the lifeline
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+                **extra,
+            )
+            self.procs[name] = proc
+            reader = threading.Thread(target=self._pump, args=(name, proc), name=f"output-{name}", daemon=True)
+            reader.start()
+            self._readers[name] = reader
+
+    def _pump(self, name: str, proc: subprocess.Popen) -> None:
+        # Keep draining even if our own stdout breaks, or the child would
+        # block on a full pipe.
+        for line in proc.stdout:
+            line = line.rstrip("\r\n")
+            self.logs[name].append(line)
+            self._say(f"[{name}] {line}")
+        proc.stdout.close()
+
+    def _drain(self, name: str) -> None:
+        reader = self._readers.get(name)
+        if reader is not None:
+            reader.join(timeout=2)
+
+    def _tail(self, name: str) -> str:
+        return "\n".join(self.logs[name])
+
+    def _wait_healthy(self) -> None:
+        api = self.procs["api"]
+        deadline = time.monotonic() + self.startup_timeout
+        while time.monotonic() < deadline:
+            if self._quit.is_set():
+                return
+            if api.poll() is not None:
+                self._drain("api")
+                raise RuntimeError(f"the API exited with code {api.returncode} during startup:\n{self._tail('api')}")
+            try:
+                with urllib.request.urlopen(self.health_url, timeout=2) as r:
+                    if r.status == 200:
+                        return
+            except OSError:
+                pass
+            self._quit.wait(0.5)
+        raise RuntimeError(
+            f"the API didn't answer at {self.health_url} within {self.startup_timeout:g}s:\n{self._tail('api')}"
+        )
+
+    def _terminate_children(self) -> None:
+        with self._lock:
+            procs = list(self.procs.values())
+            for proc in procs:
+                if proc.poll() is None:
+                    proc.terminate()
+            deadline = time.monotonic() + 10
+            for proc in procs:
+                try:
+                    proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+            for reader in self._readers.values():
+                reader.join(timeout=2)
+            self.procs = {}
+            self._readers = {}
+
+    def _watch_stdin(self) -> None:
+        """Lifeline: the desktop shell holds our stdin open and closes it to
+        quit. EOF (or no usable stdin at all) means stop."""
+        try:
+            stream = sys.stdin.buffer
+            while stream.read(4096):
+                pass
+        except Exception:
+            pass
+        self.request_stop()
+
+    def _restore_handlers(self) -> None:
+        if threading.current_thread() is not threading.main_thread():
+            return
+        for sig, handler in self._old_handlers.items():
+            signal.signal(sig, handler)
+        self._old_handlers = {}
+        self._handlers_installed = False
+
+
+# --- Entry point ----------------------------------------------------------
+
+
+def _interrupt(*_):
+    raise KeyboardInterrupt
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", DEFAULT_PORT)))
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--resources", type=Path, help="app bundle resources dir (api/, worker/, sql/, ui/); default: this repo")
+    parser.add_argument("--lifeline", action="store_true", help="quit when stdin closes (used by the desktop shell)")
     args = parser.parse_args()
     paths = resolve_paths(args.resources)
+    # Tests only: fake children from tests/fake_child.py, no Postgres.
+    fake = os.environ.get("KA_FAKE_CHILDREN") == "1"
 
     home = data_dir()
-    print(f"{APP_NAME}: data in {home}")
+    print(f"{APP_NAME}: data in {home}", flush=True)
     existing = running_instance(home)
     if existing:
-        print(f"Already running at {existing}")
+        print(f"Already running at {existing}", flush=True)
         if not args.no_browser:
             webbrowser.open(existing)
         return 0
     desktop_config.load_secrets(home)  # generate keys on first run
 
-    print("Starting database…")
-    db, db_uri = start_database(home)
-    asyncio.run(migrate(db_uri, paths.sql_dir))
-
-    port = free_port(args.port)
-    base_url = f"http://127.0.0.1:{port}"
-    env = child_env(base_url, db_uri, home, paths)
-    if not paths.ui_dir.is_dir():
-        print(
-            "  note: no built UI found — run `DESKTOP_BUILD=1 npm run build` in services/frontend.\n"
-            "  The API still runs; the UI won't be served until then."
-        )
-
-    py = sys.executable
-    api = subprocess.Popen(
-        [py, "-m", "uvicorn", "app.desktop:app", "--host", "127.0.0.1", "--port", str(port), "--log-level", "warning"],
-        cwd=paths.api_dir,
-        env=env,
-    )
-    worker = subprocess.Popen([py, "-m", "app.main"], cwd=paths.worker_dir, env=env)
-    children = [api, worker]
-
-    def shutdown(*_):
-        for p in children:
-            if p.poll() is None:
-                p.terminate()
-        for p in children:
-            try:
-                p.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                p.kill()
-        db.cleanup()
-        (home / "running.json").unlink(missing_ok=True)
-
+    # Until the supervisor installs its own handlers, SIGTERM unwinds like
+    # Ctrl-C so the finally below still stops Postgres.
+    signal.signal(signal.SIGTERM, _interrupt)
+    running = home / "running.json"
+    db = None
+    sup = None
     try:
-        wait_healthy(f"{base_url}/api/health", api)
-        (home / "running.json").write_text(json.dumps({"url": base_url, "pid": os.getpid()}))
-        print(f"Ready: {base_url}")
-        if not args.no_browser:
-            webbrowser.open(base_url)
-        signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt))
-        while all(p.poll() is None for p in children):
-            time.sleep(1)
-        name = "API" if api.poll() is not None else "worker"
-        print(f"The {name} process stopped; shutting down.")
+        if fake:
+            db_uri = "postgresql://fake@/fake"
+        else:
+            print("Starting database…", flush=True)
+            db, db_uri = start_database(home)
+            asyncio.run(migrate(db_uri, paths.sql_dir))
+
+        port = free_port(args.port)
+        base_url = f"http://127.0.0.1:{port}"
+        if not fake and not paths.ui_dir.is_dir():
+            print(
+                "  note: no built UI found — run `DESKTOP_BUILD=1 npm run build` in services/frontend.\n"
+                "  The API still runs; the UI won't be served until then.",
+                flush=True,
+            )
+
+        py = sys.executable
+        if fake:
+            fake_child = str(Path(__file__).resolve().parent / "tests" / "fake_child.py")
+            commands = {"api": ([py, fake_child, "--port", str(port)], home), "worker": ([py, fake_child], home)}
+        else:
+            commands = {
+                "api": (
+                    [py, "-m", "uvicorn", "app.desktop:app", "--host", "127.0.0.1", "--port", str(port), "--log-level", "warning"],
+                    paths.api_dir,
+                ),
+                "worker": ([py, "-m", "app.main"], paths.worker_dir),
+            }
+
+        def on_stop() -> None:
+            running.unlink(missing_ok=True)
+            if db is not None:
+                db.cleanup()
+
+        sup = Supervisor(commands, lambda: child_env(base_url, db_uri, home, paths), f"{base_url}/api/health", on_stop)
+        sup.install_handlers(args.lifeline)
+        sup.start()
+        if not sup.stop_requested:
+            running.write_text(json.dumps({"url": base_url, "pid": os.getpid()}))
+            print(f"Ready: {base_url}", flush=True)
+            if not args.no_browser:
+                webbrowser.open(base_url)
+        return sup.run(args.lifeline)
+    except RuntimeError as exc:
+        print(f"Error: {exc}", flush=True)
         return 1
     except KeyboardInterrupt:
         return 0
-    except RuntimeError as exc:
-        print(f"Error: {exc}")
-        return 1
     finally:
-        shutdown()
+        if sup is not None:
+            sup.stop()
+        elif db is not None:
+            db.cleanup()
 
 
 if __name__ == "__main__":

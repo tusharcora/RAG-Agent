@@ -44,6 +44,23 @@ CLAIM_SQL = text(
 )
 
 
+REQUEUE_STALE_SQL = text(
+    "UPDATE event_log SET status = 'received', available_at = now(), updated_at = now()"
+    " WHERE status = 'processing'"
+)
+
+
+async def requeue_stale(session) -> int:
+    """Put jobs left 'processing' by a worker that died mid-job (app quit,
+    crash, restart after setup) back in the queue, and commit. Returns how
+    many. Desktop runs exactly one worker, so at startup nothing else can
+    legitimately hold a 'processing' row; with several workers sharing the
+    table this would steal live jobs and would need a lease/heartbeat instead."""
+    result = await session.execute(REQUEUE_STALE_SQL)
+    await session.commit()
+    return result.rowcount
+
+
 async def _finish(event_id, status: str, error: str | None = None, retry_in: float | None = None) -> None:
     async with get_session() as session:
         params = {"id": event_id, "status": status, "error": error}
@@ -92,6 +109,10 @@ async def _process(row) -> None:
 
 async def run() -> None:
     logger.info("Worker polling event_log (desktop mode, prefetch=%s)", settings.prefetch_count)
+    async with get_session() as session:
+        requeued = await requeue_stale(session)
+    if requeued:
+        logger.info("Requeued %s job(s) left in progress by a previous run", requeued)
     in_flight: set[asyncio.Task] = set()
     while True:
         free = settings.prefetch_count - len(in_flight)

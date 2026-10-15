@@ -79,6 +79,19 @@ def test_child_env_defaults_have_no_keys(tmp_path, monkeypatch):
     assert "GOOGLE_API_KEY" not in env
 
 
+def test_child_env_drops_inherited_keys(tmp_path, monkeypatch):
+    monkeypatch.setenv("VOYAGE_API_KEY", "inherited-v")
+    monkeypatch.setenv("GOOGLE_API_KEY", "inherited-g")
+    paths = launcher.resolve_paths(None)
+    env = launcher.child_env("http://127.0.0.1:1", "postgresql://u@/db", tmp_path, paths)
+    assert "VOYAGE_API_KEY" not in env
+    assert "GOOGLE_API_KEY" not in env
+    desktop_config.save_secrets(tmp_path, voyage_api_key="pa-x")
+    env = launcher.child_env("http://127.0.0.1:1", "postgresql://u@/db", tmp_path, paths)
+    assert env["VOYAGE_API_KEY"] == "pa-x"
+    assert "GOOGLE_API_KEY" not in env
+
+
 def test_child_env_ignores_inherited_provider(tmp_path, monkeypatch):
     monkeypatch.setenv("EMBEDDING_PROVIDER", "voyage")
     env = launcher.child_env("http://127.0.0.1:1", "postgresql://u@/db", tmp_path, launcher.resolve_paths(None))
