@@ -388,8 +388,20 @@ def path_d() -> None:
             popup = popup_info.value
             expect(popup.get_by_role("heading", name="Welcome, E2E.")).to_be_visible(timeout=20000)
             popup.close()
-            expect(page.get_by_text("signed in with GitHub")).to_be_visible(timeout=20000)
-            print("D: signed in again from Settings with GitHub")
+            # Same verified email as the kept Google identity: the profile comes back with both linked.
+            linked = page.get_by_role("list", name="Linked accounts")
+            expect(linked.get_by_role("button", name="Unlink GitHub")).to_be_visible(timeout=20000)
+            expect(linked.get_by_role("button", name="Unlink Google")).to_be_visible()
+            expect(linked.get_by_text("Linked · e2e@example.test")).to_have_count(2)
+            expect(page.get_by_text("E2E Person").first).to_be_visible()
+            print("D: signed in again from Settings with GitHub; Google and GitHub both linked, name restored")
+
+            linked.get_by_role("button", name="Unlink GitHub").click()
+            expect(linked.get_by_role("button", name="Link GitHub")).to_be_visible(timeout=10000)
+            expect(linked.get_by_role("button", name="Unlink Google")).to_be_visible()
+            expect(linked.get_by_text("Linked · e2e@example.test")).to_have_count(1)
+            expect(page.get_by_text("E2E Person").first).to_be_visible()
+            print("D: unlinked GitHub; Google remains")
             b.close()
         launcher.stop()
         launcher = None
