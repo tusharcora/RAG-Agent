@@ -96,3 +96,103 @@ def test_child_env_ignores_inherited_provider(tmp_path, monkeypatch):
     monkeypatch.setenv("EMBEDDING_PROVIDER", "voyage")
     env = launcher.child_env("http://127.0.0.1:1", "postgresql://u@/db", tmp_path, launcher.resolve_paths(None))
     assert env["EMBEDDING_PROVIDER"] == "ollama"
+
+
+@pytest.mark.parametrize("windows, author", [(True, "tusharcora"), (False, False)])
+def test_data_dir_publisher_folder_only_on_windows(tmp_path, monkeypatch, windows, author):
+    import platformdirs
+
+    calls = []
+
+    def fake_user_data_dir(appname, appauthor=None, *a, **kw):
+        calls.append((appname, appauthor))
+        return str(tmp_path / "data")
+
+    monkeypatch.delenv("KNOWLEDGE_AGENT_HOME", raising=False)
+    monkeypatch.setattr(launcher, "_is_windows", lambda: windows)
+    monkeypatch.setattr(platformdirs, "user_data_dir", fake_user_data_dir)
+    assert launcher.data_dir() == tmp_path / "data"
+    assert calls == [("Knowledge Agent", author)]
+
+
+def test_windows_data_dir_is_not_the_install_dir(monkeypatch):
+    """With the publisher folder, the data dir can't be Tauri's NSIS
+    per-user install dir (%LOCALAPPDATA%\\Knowledge Agent)."""
+    from platformdirs import windows
+
+    local = "C:/Users/t/AppData/Local"
+    monkeypatch.setattr(windows, "get_win_folder", lambda csidl: local)
+    path = windows.Windows("Knowledge Agent", launcher.APP_AUTHOR_WINDOWS).user_data_dir
+    assert Path(path) == Path(local) / "tusharcora" / "Knowledge Agent"
+    assert Path(path) != Path(local) / "Knowledge Agent"
+
+
+def test_data_dir_override(tmp_path, monkeypatch):
+    monkeypatch.setenv("KNOWLEDGE_AGENT_HOME", str(tmp_path / "home"))
+    assert launcher.data_dir() == tmp_path / "home"
+    assert (tmp_path / "home").is_dir()
+
+
+@pytest.fixture
+def pg_uri(tmp_path):
+    import pgserver
+
+    server = pgserver.get_server(tmp_path / "pgdata", cleanup_mode="stop")
+    try:
+        yield server.get_uri()
+    finally:
+        server.cleanup()
+
+
+def test_migrate_twice_is_idempotent_and_uuid_shim_works(pg_uri):
+    import asyncio
+
+    import asyncpg
+
+    sql_dir = DESKTOP_DIR.parent / "infra" / "postgres"
+    files = sorted(p.name for p in sql_dir.glob("*.sql"))
+
+    async def scenario():
+        await launcher.migrate(pg_uri, sql_dir)
+        await launcher.migrate(pg_uri, sql_dir)  # second run: nothing to apply, no error
+        conn = await asyncpg.connect(pg_uri)
+        try:
+            applied = [r["filename"] for r in await conn.fetch("SELECT filename FROM schema_migrations ORDER BY filename")]
+            # organizations.id defaults to uuid_generate_v4(), provided by the shim.
+            new_id = await conn.fetchval(
+                "INSERT INTO organizations (name, slug) VALUES ('Shim', 'shim-test') RETURNING id"
+            )
+            has_ossp = await conn.fetchval("SELECT count(*) FROM pg_extension WHERE extname = 'uuid-ossp'")
+            return applied, new_id, has_ossp
+        finally:
+            await conn.close()
+
+    applied, new_id, has_ossp = asyncio.run(scenario())
+    assert applied == files
+    assert new_id is not None and new_id.version == 4
+    assert has_ossp == 0, "the shim stands in for the extension"
+
+
+def test_migrate_skips_already_applied_files(pg_uri, tmp_path):
+    """Applied files are tracked by name: an edited file isn't re-run (which is
+    why infra/postgres/*.sql must be append-only)."""
+    import asyncio
+
+    import asyncpg
+
+    sql_dir = tmp_path / "sql"
+    sql_dir.mkdir()
+    (sql_dir / "001_a.sql").write_text("CREATE TABLE t_a (id uuid PRIMARY KEY DEFAULT uuid_generate_v4());")
+
+    async def scenario():
+        await launcher.migrate(pg_uri, sql_dir)
+        (sql_dir / "001_a.sql").write_text("CREATE TABLE t_a (id int);")  # would fail if re-run
+        (sql_dir / "002_b.sql").write_text("CREATE TABLE t_b (id int);")
+        await launcher.migrate(pg_uri, sql_dir)
+        conn = await asyncpg.connect(pg_uri)
+        try:
+            return await conn.fetchval("SELECT count(*) FROM schema_migrations")
+        finally:
+            await conn.close()
+
+    assert asyncio.run(scenario()) == 2

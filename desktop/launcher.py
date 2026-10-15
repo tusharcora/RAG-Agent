@@ -45,6 +45,19 @@ APP_NAME = "Knowledge Agent"
 DEFAULT_PORT = 47821
 
 
+# Windows only: the data folder sits under a publisher folder,
+# %LOCALAPPDATA%\tusharcora\Knowledge Agent. Tauri's NSIS installer
+# (installMode currentUser) installs the app itself to
+# %LOCALAPPDATA%\Knowledge Agent, which is where appauthor=False would put
+# the data too: the database and secrets would sit beside the binaries, at the
+# mercy of the installer's update/uninstall cleanup.
+APP_AUTHOR_WINDOWS = "tusharcora"
+
+
+def _is_windows() -> bool:
+    return sys.platform == "win32"
+
+
 def data_dir() -> Path:
     override = os.environ.get("KNOWLEDGE_AGENT_HOME")
     if override:
@@ -52,7 +65,10 @@ def data_dir() -> Path:
     else:
         from platformdirs import user_data_dir
 
-        path = Path(user_data_dir(APP_NAME, appauthor=False))
+        # macOS/Linux: ~/Library/Application Support/Knowledge Agent,
+        # ~/.local/share/Knowledge Agent (no publisher folder; unchanged).
+        author = APP_AUTHOR_WINDOWS if _is_windows() else False
+        path = Path(user_data_dir(APP_NAME, appauthor=author))
     path.mkdir(parents=True, exist_ok=True)
     return path
 
