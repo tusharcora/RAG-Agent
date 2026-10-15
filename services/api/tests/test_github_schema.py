@@ -64,6 +64,83 @@ def test_migration_015_applies_on_fresh_db_and_schema_py_is_idempotent(pg_dsn, m
     assert c["column_default"] == "0"
 
 
+def _shape(dsn):
+    """Columns and constraints of everything 015 creates or changes, plus the rag_source values."""
+    columns = db_run(
+        dsn,
+        "SELECT table_name, column_name, data_type, is_nullable, column_default FROM information_schema.columns"
+        " WHERE table_schema = 'public' AND (table_name IN ('github_repos', 'github_failures')"
+        " OR (table_name, column_name) IN (('documents', 'external_version'),"
+        " ('oauth_connections', 'needs_reconnect_at'), ('oauth_connections', 'github_rr_offset')))",
+    )
+    constraints = db_run(
+        dsn,
+        "SELECT conrelid::regclass::text AS t, contype, pg_get_constraintdef(oid) AS def FROM pg_constraint"
+        " WHERE conrelid::regclass::text IN ('github_repos', 'github_failures')",
+    )
+    (enum,) = db_run(dsn, "SELECT enum_range(NULL::rag_source)::text[] AS v")
+    return (
+        sorted(tuple(r) for r in columns),
+        sorted((r["t"], r["contype"], r["def"]) for r in constraints),
+        sorted(enum["v"]),
+    )
+
+
+def test_schema_py_upgrades_a_014_database_to_015(pg_dsn, tmp_path, monkeypatch):
+    """The server-upgrade path: a database built from 001-014 only gets 015's objects from
+    schema.ensure_schema() at API startup, identical to what the migration creates."""
+    import shutil
+    import sys
+    from pathlib import Path
+    from urllib.parse import urlsplit, urlunsplit
+
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    repo = Path(__file__).resolve().parents[3]
+    sql_dir = tmp_path / "sql"
+    sql_dir.mkdir()
+    for path in sorted((repo / "infra" / "postgres").glob("*.sql")):
+        if path.name < "015":
+            shutil.copy(path, sql_dir / path.name)
+    assert sorted(p.name for p in sql_dir.iterdir())[-1] == "014_connection_disconnect.sql"
+
+    name = f"upgrade_{uuid.uuid4().hex[:12]}"
+    db_run(pg_dsn, f"CREATE DATABASE {name}")
+    parts = urlsplit(pg_dsn)
+    dsn = urlunsplit(parts._replace(path=f"/{name}"))
+    sys.path.insert(0, str(repo / "desktop"))
+    from launcher import migrate
+
+    engine = None
+    try:
+        asyncio.run(migrate(dsn, sql_dir))
+        (before,) = db_run(dsn, "SELECT to_regclass('github_repos') AS t")
+        assert before["t"] is None
+        assert "github" not in _shape(dsn)[2]
+
+        engine = create_async_engine(dsn.replace("postgresql://", "postgresql+asyncpg://", 1), poolclass=NullPool)
+        monkeypatch.setattr(db, "_engine", engine)
+        asyncio.run(schema.ensure_schema())
+        asyncio.run(schema.ensure_schema())  # idempotent
+
+        assert _shape(dsn) == _shape(pg_dsn)  # pg_dsn was migrated with 015 itself
+        assert "github" in _shape(dsn)[2]
+        # The new value is usable once committed.
+        org_id, conn_id = uuid.uuid4(), uuid.uuid4()
+        db_run(dsn, "INSERT INTO organizations (id, name, slug) VALUES ($1, 'T', 't')", org_id)
+        db_run(dsn, "INSERT INTO oauth_connections (id, org_id, provider, workspace_id, workspace_name, access_token)"
+                    " VALUES ($1, $2, 'github', '1', 'octo', 'x')", conn_id, org_id)
+        db_run(dsn, "INSERT INTO documents (id, source, external_id, connection_id, title, url, external_version)"
+                    " VALUES ($1, 'github', 'file:1:a.md', $2, 't', 'u', 'sha')", uuid.uuid4(), conn_id)
+        db_run(dsn, "INSERT INTO github_repos (connection_id, installation_id, repo_id, full_name, html_url,"
+                    " default_branch) VALUES ($1, 1, 1, 'o/r', 'h', 'main')", conn_id)
+    finally:
+        if engine is not None:
+            asyncio.run(engine.dispose())
+        db_run(pg_dsn, f"DROP DATABASE IF EXISTS {name} WITH (FORCE)")
+
+
 def test_reset_github_state_on_every_delete_path(client_for, pg_dsn):  # noqa: F811
     client = client_for()
 
