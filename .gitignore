@@ -13,3 +13,7 @@ services/frontend/out/
 .venv-desktop/
 desktop/build/
 desktop/dist/
+
+# Desktop bundle build output
+desktop/tauri/src-tauri/resources/
+desktop/.cache/

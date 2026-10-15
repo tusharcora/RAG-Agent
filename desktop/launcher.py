@@ -69,6 +69,7 @@ def resolve_paths(resources: Path | None) -> Paths:
     """Where the api, worker, schema and built UI live: inside an app bundle's
     resources folder when given one, else this repo's layout."""
     if resources is not None:
+        resources = resources.resolve()  # children run with a different cwd
         return Paths(resources / "api", resources / "worker", resources / "sql", resources / "ui")
     return Paths(
         REPO / "services" / "api",
