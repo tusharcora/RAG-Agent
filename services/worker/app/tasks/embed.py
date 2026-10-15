@@ -117,6 +117,15 @@ async def _sync_document(
     logger.info("Embedded %d chunks for %s:%s", len(chunk_records), source, external_id)
 
 
+def _disconnected(connection: OAuthConnection) -> bool:
+    """Disconnected (POST /connections/{id}/disconnect wipes the tokens): events
+    queued before the disconnect are acked and skipped, not retried into the DLQ."""
+    if connection.disconnected_at is None and connection.access_token:
+        return False
+    logger.info("connection_id=%s is disconnected, skipping event", connection.id)
+    return True
+
+
 async def handle_notion_page_updated(payload: dict) -> None:
     page_id = payload["page_id"]
     connection_id = payload["connection_id"]
@@ -126,6 +135,8 @@ async def handle_notion_page_updated(payload: dict) -> None:
             connection = await session.get(OAuthConnection, uuid.UUID(connection_id))
             if connection is None:
                 logger.warning("No oauth_connections row for connection_id=%s, dropping", connection_id)
+                return
+            if _disconnected(connection):
                 return
 
             # connection.access_token is ciphertext at rest (see app/core/crypto.py).
@@ -169,6 +180,8 @@ async def handle_jira_issue_updated(payload: dict) -> None:
             connection = await session.get(OAuthConnection, uuid.UUID(connection_id))
             if connection is None:
                 logger.warning("No oauth_connections row for connection_id=%s, dropping", connection_id)
+                return
+            if _disconnected(connection):
                 return
 
             client = JiraClient(connection)

@@ -115,10 +115,12 @@ async def _ensure_fresh_token(connection: OAuthConnection) -> str:
 
     async with get_session() as session:
         db_connection = await session.get(OAuthConnection, connection.id)
-        db_connection.access_token = encrypt_token(new_access_token)
-        db_connection.refresh_token = encrypt_token(new_refresh_token)
-        db_connection.expires_at = new_expires_at
-        await session.commit()
+        # Disconnected while this refresh was in flight: don't write tokens back onto a wiped row.
+        if getattr(db_connection, "disconnected_at", None) is None:
+            db_connection.access_token = encrypt_token(new_access_token)
+            db_connection.refresh_token = encrypt_token(new_refresh_token)
+            db_connection.expires_at = new_expires_at
+            await session.commit()
 
     # Keep the in-memory connection's fields ciphertext, matching the DB — every
     # call into this function decrypts them fresh at the top, so a stray plaintext
