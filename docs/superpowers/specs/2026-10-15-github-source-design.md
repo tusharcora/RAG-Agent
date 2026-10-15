@@ -92,8 +92,9 @@ databases get schema from there at startup):
 - Finish page: GitHub tile, "GitHub is *connected*.", card = login + "N repositories" (or "No repositories yet —
   choose them on GitHub" with the install link when there are none).
 - Web: `services/api/app/api/routes/github_source_oauth.py` — `/oauth/github_source/authorize` (require_auth; Redis
-  CSRF state carrying org_id, like `jira_oauth.py`; redirects to the same OAuth authorize URL) and `/callback`
-  (exchange, list installations, save, redirect to `{FRONTEND_URL}/connections?connected=github`).
+  CSRF state carrying org_id and user_id; redirects to the same OAuth authorize URL) and `/callback` (require_auth,
+  same user and org as the state or 400; exchange, save, redirect to `{FRONTEND_URL}/connections?connected=github`,
+  or `?error=<message>` on denial/failure).
 - **Refresh (api `app/integrations/github_auth.py` and the worker's client)**, when `expires_at` is within 5 min or a
   call returned 401:
   Runs in its **own short transaction/session**, never the caller's (so worker handlers aren't blocked for a whole sync).
@@ -115,7 +116,8 @@ databases get schema from there at startup):
 1. **Repositories.** For each installation from `GET /user/installations`, list
    `GET /user/installations/{id}/repositories` (all pages). Only if **every** listing succeeded: upsert
    `github_repos` (refreshing `full_name`, `html_url`, `default_branch`) and delete repos no longer listed together
-   with their documents. A failed listing leaves repos and documents alone.
+   with their documents. A failed listing leaves repos and documents alone; one installation that can't be listed
+   doesn't stop the others (listed repos are upserted, stored repos keep syncing, the sync is truncated).
 2. **Budget.** At most `max_github_items_per_sync` (default 500) items are enqueued per sync. Each repo contributes
    two candidate streams (changed files, changed issues/PRs); the sync takes **one item per stream per pass**,
    cycling through all repos, and **rotates the starting repo** each sync (stored per connection), so no repo or
@@ -140,7 +142,9 @@ databases get schema from there at startup):
      `external_version` ≠ `updated_at`. Advance `issues_cursor` to the `updated_at` of the last item **examined**
      (enqueued or unchanged) before the budget ran out.
    - Shrinking the window doesn't delete older documents; growing it backfills on the next full scan.
-5. Dedupe keys embed `connection_id`, the external id and the version (blob sha / `updated_at`).
+5. Dedupe keys embed `connection_id`, the `github_repos` row id (new whenever the row is recreated, so a resync
+   after documents were removed isn't skipped by the worker's 24 h dedupe), the external id and the version (blob sha /
+   `updated_at`).
 
 Worker (`services/worker/app/tasks/github.py`, registered in `HANDLERS`):
 
