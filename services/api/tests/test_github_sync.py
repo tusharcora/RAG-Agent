@@ -351,7 +351,8 @@ def test_files_filter_md_mdx_and_size(gh, published, factory, pg_dsn):
     assert sorted(paths(published)) == ["README.md", "docs/a.md", "x.mdx"]
     event = next(e for e in published if e["payload"]["path"] == "docs/a.md")
     assert event["routing_key"] == "rag.github_file_updated"
-    assert event["dedupe_key"] == f"github:{conn_id}:file:11:docs/a.md:s1"
+    row_id = repos(pg_dsn, conn_id)[11]["id"]
+    assert event["dedupe_key"] == f"github:{conn_id}:{row_id}:file:11:docs/a.md:s1"
     assert set(event["payload"]) == {"connection_id", "org_id", "repo_id", "full_name", "path", "sha", "html_url"}
     assert event["payload"]["html_url"] == "https://github.com/octo/a/blob/main/docs/a.md"
     assert event["payload"]["repo_id"] == 11 and event["payload"]["full_name"] == "octo/a"
@@ -477,7 +478,8 @@ def test_issue_cursor_overlap_and_routing(gh, published, factory, pg_dsn):
     by_number = {e["payload"]["number"]: e for e in published}
     assert by_number[2]["routing_key"] == "rag.github_pr_updated"
     assert by_number[3]["routing_key"] == "rag.github_issue_updated"
-    assert by_number[2]["dedupe_key"] == f"github:{conn_id}:pr:11:2:2026-10-02T09:00:00Z"
+    row_id = repos(pg_dsn, conn_id)[11]["id"]
+    assert by_number[2]["dedupe_key"] == f"github:{conn_id}:{row_id}:pr:11:2:2026-10-02T09:00:00Z"
     assert set(by_number[3]["payload"]) == {
         "connection_id", "org_id", "repo_id", "full_name", "number", "updated_at", "html_url"
     }
@@ -672,6 +674,80 @@ def test_resync_after_remove_documents(gh, published, factory, pg_dsn):
     before = len(published)
     assert sync(factory, conn_id)["published"] == 2
     assert sorted(map(str, paths(published[before:]))) == ["1", "a.md"]
+
+
+@pytest.fixture
+def worker_dedupe():
+    """The worker's own already_processed (services/worker/app/core/idempotency.py), loaded from
+    its file against an in-memory Redis, so a test can see what the worker would skip."""
+    import importlib.util
+    import sys
+    import types
+    from pathlib import Path
+
+    from fakeredis import FakeAsyncRedis
+
+    fake_config = types.ModuleType("app.core.config")
+    fake_config.settings = types.SimpleNamespace(redis_url="memory://", dedupe_ttl_seconds=86400)
+    real_config = sys.modules["app.core.config"]
+    sys.modules["app.core.config"] = fake_config
+    path = Path(__file__).resolve().parents[2] / "worker" / "app" / "core" / "idempotency.py"
+    spec = importlib.util.spec_from_file_location("worker_idempotency", path)
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules["app.core.config"] = real_config  # the api's own, for everything else
+    module._redis = FakeAsyncRedis(decode_responses=True)
+
+    def deliver(events) -> list[bool]:
+        """already_processed() for each event's dedupe key, as the worker does on delivery."""
+
+        async def go():
+            return [await module.already_processed(e["dedupe_key"]) for e in events]
+
+        return asyncio.run(go())
+
+    return deliver
+
+
+def _sync_and_process(factory, pg_dsn, conn_id, published, worker_dedupe):
+    before = len(published)
+    sync(factory, conn_id)
+    batch = published[before:]
+    skipped = worker_dedupe(batch)
+    fake_worker(pg_dsn, conn_id, [e for e, dup in zip(batch, skipped) if not dup])
+    return batch, skipped
+
+
+def test_resync_after_reset_is_not_deduped_by_the_worker(gh, published, factory, pg_dsn, worker_dedupe):
+    # Within the worker's 24 h dedupe window, content removed by Disconnect-remove (or a repo removed
+    # and re-added) must come back on the next sync instead of being skipped as duplicates.
+    _, conn_id = seed_conn(pg_dsn)
+    gh.installations = {1: [repo(11, "a")]}
+    gh.trees["octo/a"] = {"sha": "T1", "truncated": False, "tree": [blob("a.md", "s1")]}
+    gh.issues["octo/a"] = [issue(1, iso(datetime.now(timezone.utc) - timedelta(days=1)))]
+    batch, skipped = _sync_and_process(factory, pg_dsn, conn_id, published, worker_dedupe)
+    assert len(batch) == 2 and skipped == [False, False]
+
+    async def remove():
+        async with factory() as session:
+            await connections_routes._delete_documents(session, conn_id)
+            await session.commit()
+
+    asyncio.run(remove())
+    batch, skipped = _sync_and_process(factory, pg_dsn, conn_id, published, worker_dedupe)
+    assert len(batch) == 2 and skipped == [False, False]
+    assert set(docs(pg_dsn, conn_id)) == {"file:11:a.md", "issue:11:1"}
+
+    # The repository leaves the installation (documents removed), then comes back.
+    gh.installations = {1: []}
+    sync(factory, conn_id)
+    assert docs(pg_dsn, conn_id) == {}
+    gh.installations = {1: [repo(11, "a")]}
+    batch, skipped = _sync_and_process(factory, pg_dsn, conn_id, published, worker_dedupe)
+    assert len(batch) == 2 and skipped == [False, False]
+    assert set(docs(pg_dsn, conn_id)) == {"file:11:a.md", "issue:11:1"}
 
 
 # --------------------------------------------------------------------------- tokens, route, auto_sync

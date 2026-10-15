@@ -448,7 +448,9 @@ async def _enumerate(session: AsyncSession, connection: OAuthConnection, token: 
                         session,
                         routing_key=item.routing_key,
                         payload=item.payload,
-                        dedupe_key=f"github:{connection_id}:{item.external_id}:{item.version}",
+                        # The repo row's id is new whenever the row is recreated (documents removed, repo
+                        # removed and re-added), so a resync isn't skipped by the worker's 24 h dedupe.
+                        dedupe_key=f"github:{connection_id}:{stream.repo.id}:{item.external_id}:{item.version}",
                         org_id=connection.org_id,
                     )
                     stream.published(item)
