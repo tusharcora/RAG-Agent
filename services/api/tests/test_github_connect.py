@@ -218,6 +218,13 @@ class FakeRedis:
         self.data.pop(key, None)
 
 
+def _state(web, name="st", org_id=None, user_id=None):
+    """The Redis CSRF state /authorize stores: the initiating org and user."""
+    web.redis.data[f"oauth_state:github_source:{name}"] = json.dumps(
+        {"org_id": str(org_id or web.org_id), "user_id": str(user_id or web.user_id)}
+    )
+
+
 @pytest.fixture
 def web(make_client, monkeypatch):
     monkeypatch.setattr(settings, "token_encryption_key", Fernet.generate_key().decode())
@@ -268,7 +275,8 @@ def test_web_authorize_requires_auth_and_redirects(web):
     q = dict(loc.params)
     assert q["client_id"] == "Iv1.cid" and q["redirect_uri"] == settings.github_source_redirect_uri
     key = f"oauth_state:github_source:{q['state']}"
-    assert web.redis.data[key] == str(web.org_id) and web.redis.ttls[key] == settings.oauth_state_ttl_seconds
+    assert json.loads(web.redis.data[key]) == {"org_id": str(web.org_id), "user_id": str(web.user_id)}
+    assert web.redis.ttls[key] == settings.oauth_state_ttl_seconds
 
     web.app.dependency_overrides.pop(require_auth)
     assert web.get("/oauth/github_source/authorize", follow_redirects=False).status_code == 401
@@ -291,7 +299,7 @@ def test_web_callback_bad_state_400(web):
 
 
 def test_web_callback_saves_and_redirects(web, pg_dsn):
-    web.redis.data["oauth_state:github_source:st"] = str(web.org_id)
+    _state(web)
     r = web.get("/oauth/github_source/callback", params={"code": "good", "state": "st"}, follow_redirects=False)
     assert r.status_code in (302, 307)
     assert r.headers["location"] == f"{settings.frontend_url}/connections?connected=github"
@@ -307,19 +315,46 @@ def test_web_callback_saves_and_redirects(web, pg_dsn):
 
 
 def test_web_callback_denied_is_400_and_saves_nothing(web, pg_dsn):
-    web.redis.data["oauth_state:github_source:st"] = str(web.org_id)
+    _state(web)
     r = web.get("/oauth/github_source/callback", params={"code": "denied", "state": "st"}, follow_redirects=False)
     assert r.status_code == 400 and r.json()["detail"] == "GitHub access wasn't granted."
     assert _rows(pg_dsn, web.org_id, "github") == []
     # GitHub's own "user said no" redirect carries error instead of code.
-    web.redis.data["oauth_state:github_source:st2"] = str(web.org_id)
+    _state(web, "st2")
     r = web.get("/oauth/github_source/callback", params={"error": "access_denied", "state": "st2"}, follow_redirects=False)
     assert r.status_code == 400 and r.json()["detail"] == "GitHub access wasn't granted."
 
 
+def test_web_callback_other_user_is_400_and_saves_nothing(web, pg_dsn):
+    # A state started by someone else (e.g. a link an attacker sends) can't attach their GitHub
+    # account to the signed-in person's workspace.
+    _state(web, user_id=uuid.uuid4())
+    r = web.get("/oauth/github_source/callback", params={"code": "good", "state": "st"}, follow_redirects=False)
+    assert r.status_code == 400
+    assert web.exchanges == [] and _rows(pg_dsn, web.org_id, "github") == []
+    assert web.redis.data == {}  # used up either way
+
+
+def test_web_callback_other_org_is_400_and_saves_nothing(web, pg_dsn):
+    other_org = uuid.uuid4()
+    _state(web, org_id=other_org)
+    r = web.get("/oauth/github_source/callback", params={"code": "good", "state": "st"}, follow_redirects=False)
+    assert r.status_code == 400
+    assert web.exchanges == []
+    assert _rows(pg_dsn, web.org_id, "github") == [] and _rows(pg_dsn, other_org, "github") == []
+
+
+def test_web_callback_requires_auth(web, pg_dsn):
+    _state(web)
+    web.app.dependency_overrides.pop(require_auth)
+    r = web.get("/oauth/github_source/callback", params={"code": "good", "state": "st"}, follow_redirects=False)
+    assert r.status_code == 401
+    assert web.exchanges == [] and _rows(pg_dsn, web.org_id, "github") == []
+
+
 def test_github_source_routes_404_without_config(web, monkeypatch):
     monkeypatch.setattr(settings, "github_source_client_id", "")
-    web.redis.data["oauth_state:github_source:st"] = str(web.org_id)
+    _state(web)
     assert web.get("/oauth/github_source/authorize", follow_redirects=False).status_code == 404
     r = web.get("/oauth/github_source/callback", params={"code": "c", "state": "st"}, follow_redirects=False)
     assert r.status_code == 404

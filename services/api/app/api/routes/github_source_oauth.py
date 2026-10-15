@@ -3,9 +3,14 @@ the GitHub App's user authorization. Same shape as jira_oauth.py: /authorize
 stores the caller's org_id as the Redis CSRF state value, /callback reads it back.
 Not the same thing as social_auth.py's "Continue with GitHub" sign-in.
 
+The state also carries the initiating user, and /callback requires the signed-in session
+to be that same user in that same org: otherwise someone could start the flow with their
+own GitHub account and get another person to finish it, attaching it to their workspace.
+
 Repositories are chosen on GitHub (the app's installation page); each sync lists
 the user's installations, so none are stored here."""
 
+import json
 import logging
 import secrets
 import uuid
@@ -37,7 +42,8 @@ router = APIRouter(dependencies=[Depends(_configured)])
 async def authorize(auth: AuthContext = Depends(require_auth)) -> RedirectResponse:
     require_role(auth, "owner", "admin")
     state = secrets.token_urlsafe(32)
-    await get_redis().set(f"oauth_state:github_source:{state}", str(auth.org_id), ex=settings.oauth_state_ttl_seconds)
+    value = json.dumps({"org_id": str(auth.org_id), "user_id": str(auth.user_id)})
+    await get_redis().set(f"oauth_state:github_source:{state}", value, ex=settings.oauth_state_ttl_seconds)
     params = {
         "client_id": settings.github_source_client_id,
         "redirect_uri": settings.github_source_redirect_uri,
@@ -52,14 +58,21 @@ async def callback(
     code: str = Query(""),
     error: str = Query(""),
     session: AsyncSession = Depends(get_session),
+    auth: AuthContext = Depends(require_auth),
 ) -> RedirectResponse:
     redis = get_redis()
     state_key = f"oauth_state:github_source:{state}"
-    org_id_raw = await redis.get(state_key)
-    if not org_id_raw:
+    raw = await redis.get(state_key)
+    if not raw:
         raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
     await redis.delete(state_key)
-    org_id = uuid.UUID(org_id_raw)
+    try:
+        stored = json.loads(raw)
+        org_id, user_id = uuid.UUID(stored["org_id"]), uuid.UUID(stored["user_id"])
+    except (ValueError, KeyError, TypeError):
+        raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
+    if org_id != auth.org_id or user_id != auth.user_id:
+        raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
 
     if error or not code:
         raise HTTPException(status_code=400, detail=github_api.NOT_GRANTED)
