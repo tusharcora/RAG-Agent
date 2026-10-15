@@ -68,6 +68,11 @@ def _identities(dsn, user_id):
     return [dict(r) for r in db_run(dsn, "SELECT provider, provider_user_id, email FROM oauth_identities WHERE user_id = $1", user_id)]
 
 
+def _config(tmp_path) -> dict:
+    path = tmp_path / "desktop.json"
+    return json.loads(path.read_text()) if path.exists() else {}
+
+
 def _drop_local_user(dsn):
     db_run(dsn, "DELETE FROM users WHERE email = $1", LOCAL_EMAIL)
 
@@ -91,11 +96,12 @@ def test_finish_google_links_identity_and_updates_user(client, fake_broker, pg_d
     assert _identities(pg_dsn, c.user_id) == [
         {"provider": "google", "provider_user_id": result["provider_user_id"], "email": result["email"]}
     ]
-    # Signing in again with the same account updates rather than duplicates.
+    # Signing in again with the same account updates the link rather than duplicating it; while signed in
+    # the profile's name stays as it is.
     again = {**result, "name": "Ada King"}
-    assert "Signed in as Ada King" in _sign_in(c, fake_broker, again)
+    assert "Signed in as Ada Lovelace" in _sign_in(c, fake_broker, again)
     assert len(_identities(pg_dsn, c.user_id)) == 1
-    assert _user(pg_dsn, c.user_id)["display_name"] == "Ada King"
+    assert _user(pg_dsn, c.user_id)["display_name"] == "Ada Lovelace"
 
 
 def test_google_start_works_once_registered(client, fake_broker):  # noqa: F811
@@ -104,15 +110,223 @@ def test_google_start_works_once_registered(client, fake_broker):  # noqa: F811
     assert client().post("/connect/github/start").status_code == 200
 
 
-def test_github_replaces_google_link(client, fake_broker, pg_dsn):  # noqa: F811
+def test_same_email_second_provider_links_both(client, fake_broker, pg_dsn):  # noqa: F811
     c = client(db=True)
-    _sign_in(c, fake_broker, _identity("google"))
-    gh = _identity("github", name="ada-gh")
-    assert "Signed in as ada-gh" in _sign_in(c, fake_broker, gh)
-    assert _identities(pg_dsn, c.user_id) == [
-        {"provider": "github", "provider_user_id": gh["provider_user_id"], "email": gh["email"]}
+    g = _identity("google")
+    _sign_in(c, fake_broker, g)
+    gh = _identity("github", email=g["email"], name="ada-gh")
+    assert "Signed in as Ada Lovelace" in _sign_in(c, fake_broker, gh)
+    assert sorted(i["provider"] for i in _identities(pg_dsn, c.user_id)) == ["github", "google"]
+    assert _user(pg_dsn, c.user_id) == {"email": g["email"], "display_name": "Ada Lovelace"}
+    status = c.get("/account").json()
+    assert status["signed_in"] is True and status["provider"] == "google"
+    assert status["identities"] == [
+        {"provider": "google", "email": g["email"]},
+        {"provider": "github", "email": g["email"]},
     ]
-    assert _user(pg_dsn, c.user_id) == {"email": gh["email"], "display_name": "ada-gh"}
+
+
+def test_different_email_while_logged_in_links_both_keeps_primary(client, fake_broker, pg_dsn):  # noqa: F811
+    c = client(db=True)
+    g = _identity("google")
+    _sign_in(c, fake_broker, g)
+    gh = _identity("github", name="ada-gh")
+    _sign_in(c, fake_broker, gh)
+    assert sorted(i["provider"] for i in _identities(pg_dsn, c.user_id)) == ["github", "google"]
+    assert _user(pg_dsn, c.user_id) == {"email": g["email"], "display_name": "Ada Lovelace"}
+    assert c.get("/account").json()["email"] == g["email"]
+
+
+def test_relink_same_provider_other_account_replaces_that_provider(client, fake_broker, pg_dsn):  # noqa: F811
+    c = client(db=True)
+    g1 = _identity("google")
+    _sign_in(c, fake_broker, g1)
+    _sign_in(c, fake_broker, _identity("github"))
+    g2 = _identity("google")
+    _sign_in(c, fake_broker, g2)
+    rows = _identities(pg_dsn, c.user_id)
+    assert sorted(i["provider"] for i in rows) == ["github", "google"]
+    assert {"provider": "google", "provider_user_id": g2["provider_user_id"], "email": g2["email"]} in rows
+    assert _user(pg_dsn, c.user_id)["email"] == g1["email"]
+
+
+def test_logged_in_local_email_adopts_new_identity_email(client, fake_broker, pg_dsn):  # noqa: F811
+    _drop_local_user(pg_dsn)
+    try:
+        c = client(db=True)
+        _sign_in(c, fake_broker, _identity("github", email=None, name="octo"))
+        assert _user(pg_dsn, c.user_id) == {"email": LOCAL_EMAIL, "display_name": "octo"}
+        g = _identity("google")
+        assert "Signed in as octo" in _sign_in(c, fake_broker, g)
+        assert _user(pg_dsn, c.user_id) == {"email": g["email"], "display_name": "octo"}
+    finally:
+        _drop_local_user(pg_dsn)
+
+
+def test_sign_out_keeps_identities_and_reports_signed_out(client, fake_broker, pg_dsn, tmp_path):  # noqa: F811
+    _drop_local_user(pg_dsn)
+    try:
+        c = client(db=True)
+        g = _identity("google")
+        _sign_in(c, fake_broker, g)
+        _sign_in(c, fake_broker, _identity("github", email=g["email"]))
+        assert c.post("/account/sign-out").status_code == 200
+        assert len(_identities(pg_dsn, c.user_id)) == 2
+        assert _user(pg_dsn, c.user_id) == {"email": LOCAL_EMAIL, "display_name": None}
+        saved = json.loads((tmp_path / "desktop.json").read_text())
+        assert saved["account_signed_out"] == {"name": "Ada Lovelace", "email": g["email"]}
+        status = c.get("/account").json()
+        assert status["signed_in"] is False and status["identities"] == []
+        assert status["provider"] is None and status["email"] is None and status["name"] is None
+        # Signing out twice doesn't overwrite what was saved.
+        assert c.post("/account/sign-out").status_code == 200
+        assert json.loads((tmp_path / "desktop.json").read_text())["account_signed_out"]["name"] == "Ada Lovelace"
+    finally:
+        _drop_local_user(pg_dsn)
+
+
+def test_signed_out_matching_email_other_provider_restores(client, fake_broker, pg_dsn, tmp_path):  # noqa: F811
+    _drop_local_user(pg_dsn)
+    try:
+        c = client(db=True)
+        g = _identity("google")
+        _sign_in(c, fake_broker, g)
+        c.post("/account/sign-out")
+        gh = _identity("github", email=g["email"].upper(), name="ada-gh")
+        assert "Signed in as Ada Lovelace" in _sign_in(c, fake_broker, gh)
+        assert sorted(i["provider"] for i in _identities(pg_dsn, c.user_id)) == ["github", "google"]
+        assert _user(pg_dsn, c.user_id) == {"email": g["email"], "display_name": "Ada Lovelace"}
+        assert not _config(tmp_path).get("account_signed_out")
+        status = c.get("/account").json()
+        assert status["signed_in"] is True and status["name"] == "Ada Lovelace"
+        assert [i["provider"] for i in status["identities"]] == ["google", "github"]
+    finally:
+        _drop_local_user(pg_dsn)
+
+
+def test_signed_out_matches_kept_identity_email(client, fake_broker, pg_dsn):  # noqa: F811
+    """The second identity's (different) email matches too, not only the account email."""
+    _drop_local_user(pg_dsn)
+    try:
+        c = client(db=True)
+        g = _identity("google")
+        _sign_in(c, fake_broker, g)
+        gh = _identity("github")
+        _sign_in(c, fake_broker, gh)
+        c.post("/account/sign-out")
+        g2 = _identity("google", email=gh["email"], name="Other")
+        assert "Signed in as Ada Lovelace" in _sign_in(c, fake_broker, g2)
+        rows = _identities(pg_dsn, c.user_id)
+        assert sorted(i["provider_user_id"] for i in rows) == sorted([gh["provider_user_id"], g2["provider_user_id"]])
+        assert _user(pg_dsn, c.user_id) == {"email": g["email"], "display_name": "Ada Lovelace"}
+    finally:
+        _drop_local_user(pg_dsn)
+
+
+def test_signed_out_same_provider_user_matches_even_if_email_changed(client, fake_broker, pg_dsn):  # noqa: F811
+    _drop_local_user(pg_dsn)
+    try:
+        c = client(db=True)
+        g = _identity("google")
+        _sign_in(c, fake_broker, g)
+        _sign_in(c, fake_broker, _identity("github", email=g["email"]))
+        c.post("/account/sign-out")
+        changed = {**g, "email": f"new-{_uid()}@example.com", "name": "Ada K"}
+        assert "Signed in as Ada Lovelace" in _sign_in(c, fake_broker, changed)
+        rows = {i["provider"]: i for i in _identities(pg_dsn, c.user_id)}
+        assert set(rows) == {"google", "github"}
+        assert rows["google"]["email"] == changed["email"]
+        assert _user(pg_dsn, c.user_id) == {"email": g["email"], "display_name": "Ada Lovelace"}
+    finally:
+        _drop_local_user(pg_dsn)
+
+
+def test_signed_out_non_matching_drops_old_identities(client, fake_broker, pg_dsn, tmp_path):  # noqa: F811
+    _drop_local_user(pg_dsn)
+    try:
+        c = client(db=True)
+        _sign_in(c, fake_broker, _identity("google"))
+        c.post("/account/sign-out")
+        gh = _identity("github", name="Grace")
+        assert "Signed in as Grace" in _sign_in(c, fake_broker, gh)
+        assert _identities(pg_dsn, c.user_id) == [
+            {"provider": "github", "provider_user_id": gh["provider_user_id"], "email": gh["email"]}
+        ]
+        assert _user(pg_dsn, c.user_id) == {"email": gh["email"], "display_name": "Grace"}
+        assert not _config(tmp_path).get("account_signed_out")
+    finally:
+        _drop_local_user(pg_dsn)
+
+
+def test_signed_out_null_email_never_matches(client, fake_broker, pg_dsn):  # noqa: F811
+    _drop_local_user(pg_dsn)
+    try:
+        c = client(db=True)
+        _sign_in(c, fake_broker, _identity("google", email=None, name="NoMail"))
+        c.post("/account/sign-out")
+        gh = _identity("github", email=None, name="octo")
+        assert "Signed in as octo" in _sign_in(c, fake_broker, gh)
+        assert [i["provider"] for i in _identities(pg_dsn, c.user_id)] == ["github"]
+        assert _user(pg_dsn, c.user_id) == {"email": LOCAL_EMAIL, "display_name": "octo"}
+    finally:
+        _drop_local_user(pg_dsn)
+
+
+def test_unlink_one_then_last(client, fake_broker, pg_dsn, tmp_path):  # noqa: F811
+    _drop_local_user(pg_dsn)
+    try:
+        c = client(db=True)
+        g = _identity("google")
+        gh = _identity("github")
+        _sign_in(c, fake_broker, g)
+        _sign_in(c, fake_broker, gh)
+        # Unlinking the identity whose email the profile uses switches to the remaining one's.
+        assert c.post("/account/unlink/google").status_code == 200
+        assert [i["provider"] for i in _identities(pg_dsn, c.user_id)] == ["github"]
+        assert _user(pg_dsn, c.user_id) == {"email": gh["email"], "display_name": "Ada Lovelace"}
+        status = c.get("/account").json()
+        assert status["signed_in"] is True and status["identities"] == [{"provider": "github", "email": gh["email"]}]
+        assert status["provider"] == "github"
+
+        assert c.post("/account/unlink/github").status_code == 200
+        assert _identities(pg_dsn, c.user_id) == []
+        assert _user(pg_dsn, c.user_id) == {"email": LOCAL_EMAIL, "display_name": None}
+        assert c.get("/account").json()["signed_in"] is False
+        assert not _config(tmp_path).get("account_signed_out")
+    finally:
+        _drop_local_user(pg_dsn)
+
+
+def test_unlink_other_email_keeps_primary(client, fake_broker, pg_dsn):  # noqa: F811
+    c = client(db=True)
+    g = _identity("google")
+    _sign_in(c, fake_broker, g)
+    _sign_in(c, fake_broker, _identity("github"))
+    assert c.post("/account/unlink/github").status_code == 200
+    assert _user(pg_dsn, c.user_id) == {"email": g["email"], "display_name": "Ada Lovelace"}
+
+
+def test_unlink_not_linked_is_404(client, fake_broker, pg_dsn):  # noqa: F811
+    c = client(db=True)
+    assert c.post("/account/unlink/google").status_code == 404
+    _sign_in(c, fake_broker, _identity("google"))
+    assert c.post("/account/unlink/github").status_code == 404
+    assert c.post("/account/unlink/notion").status_code == 404
+
+
+def test_unlink_last_refused_when_local_email_taken(client, fake_broker, pg_dsn):  # noqa: F811
+    _drop_local_user(pg_dsn)
+    db_run(pg_dsn, "INSERT INTO users (id, email) VALUES ($1, $2)", uuid.uuid4(), LOCAL_EMAIL)
+    try:
+        c = client(db=True)
+        g = _identity("google")
+        _sign_in(c, fake_broker, g)
+        r = c.post("/account/unlink/google")
+        assert r.status_code == 409 and r.json()["detail"] == "Another local profile already exists on this computer."
+        assert [i["provider"] for i in _identities(pg_dsn, c.user_id)] == ["google"]
+        assert _user(pg_dsn, c.user_id)["email"] == g["email"]
+    finally:
+        _drop_local_user(pg_dsn)
 
 
 def test_identity_without_email_uses_local_email(client, fake_broker, pg_dsn):  # noqa: F811
@@ -126,43 +340,35 @@ def test_identity_without_email_uses_local_email(client, fake_broker, pg_dsn):  
     assert status["email"] is None and status["name"] == "octo"
 
 
-def test_switch_to_identity_without_email_drops_previous_email(client, fake_broker, pg_dsn):  # noqa: F811
-    _drop_local_user(pg_dsn)
-    c = client(db=True)
-    g = _identity("google")
-    _sign_in(c, fake_broker, g)
-    assert _user(pg_dsn, c.user_id)["email"] == g["email"]
-    assert "Signed in as octo" in _sign_in(c, fake_broker, _identity("github", email=None, name="octo"))
-    # Google's email must not linger on a profile now signed in with GitHub.
-    assert _user(pg_dsn, c.user_id) == {"email": LOCAL_EMAIL, "display_name": "octo"}
-    assert [i["provider"] for i in _identities(pg_dsn, c.user_id)] == ["github"]
-
-
 def test_identity_without_email_refused_when_local_email_taken(client, fake_broker, pg_dsn):  # noqa: F811
+    """A first sign-in without an email moves the profile to the local placeholder: refused when another
+    user already holds it."""
     _drop_local_user(pg_dsn)
     db_run(pg_dsn, "INSERT INTO users (id, email) VALUES ($1, $2)", uuid.uuid4(), LOCAL_EMAIL)
     try:
         c = client(db=True)
-        g = _identity("google")
-        _sign_in(c, fake_broker, g)
+        before = _user(pg_dsn, c.user_id)
         page = _sign_in(c, fake_broker, _identity("github", email=None, name="octo"))
         assert "Another local profile already exists on this computer." in page
-        # Nothing changed: still signed in with Google.
-        assert _user(pg_dsn, c.user_id)["email"] == g["email"]
-        assert [i["provider"] for i in _identities(pg_dsn, c.user_id)] == ["google"]
+        assert _user(pg_dsn, c.user_id) == before
+        assert _identities(pg_dsn, c.user_id) == []
     finally:
         _drop_local_user(pg_dsn)
 
 
 def test_identity_empty_name_falls_back(client, fake_broker, pg_dsn):  # noqa: F811
-    _drop_local_user(pg_dsn)  # its email-less GitHub sign-in takes the local placeholder email
-    c = client(db=True)
-    result = _identity("google", name="  ")
-    local_part = result["email"].split("@")[0]
-    assert f"Signed in as {local_part}" in _sign_in(c, fake_broker, result)
-    assert _user(pg_dsn, c.user_id)["display_name"] == local_part
-    assert "Signed in as You" in _sign_in(c, fake_broker, _identity("github", name="", email=None))
-    assert _user(pg_dsn, c.user_id)["display_name"] == "You"
+    _drop_local_user(pg_dsn)  # the email-less GitHub sign-in takes the local placeholder email
+    try:
+        c = client(db=True)
+        result = _identity("google", name="  ")
+        local_part = result["email"].split("@")[0]
+        assert f"Signed in as {local_part}" in _sign_in(c, fake_broker, result)
+        assert _user(pg_dsn, c.user_id)["display_name"] == local_part
+        c2 = client(db=True)
+        assert "Signed in as You" in _sign_in(c2, fake_broker, _identity("github", name="", email=None))
+        assert _user(pg_dsn, c2.user_id)["display_name"] == "You"
+    finally:
+        _drop_local_user(pg_dsn)
 
 
 def test_email_collision_is_refused(client, fake_broker, pg_dsn):  # noqa: F811
@@ -210,7 +416,7 @@ def test_sign_out_restores_local_profile_keeps_data(client, fake_broker, pg_dsn)
     r = c.post("/account/sign-out")
     assert r.status_code == 200, r.text
     assert _user(pg_dsn, c.user_id) == {"email": LOCAL_EMAIL, "display_name": None}
-    assert _identities(pg_dsn, c.user_id) == []
+    assert len(_identities(pg_dsn, c.user_id)) == 1  # kept for signing back in
     assert len(db_run(pg_dsn, "SELECT 1 FROM oauth_connections WHERE org_id = $1", c.org_id)) == 1
     assert len(db_run(pg_dsn, "SELECT 1 FROM chat_sessions WHERE user_id = $1", c.user_id)) == 1
     assert len(db_run(pg_dsn, "SELECT 1 FROM chat_messages WHERE session_id = $1", sid)) == 1
@@ -291,6 +497,7 @@ def test_account_status_and_prompt_seen(client, fake_broker, pg_dsn, tmp_path, m
         "provider": None,
         "email": None,
         "name": None,
+        "identities": [],
         "broker_configured": True,
         "prompt_seen": False,
     }
@@ -301,6 +508,7 @@ def test_account_status_and_prompt_seen(client, fake_broker, pg_dsn, tmp_path, m
         "provider": "google",
         "email": result["email"],
         "name": "Ada Lovelace",
+        "identities": [{"provider": "google", "email": result["email"]}],
         "broker_configured": True,
         "prompt_seen": False,
     }
@@ -320,6 +528,7 @@ def test_account_routes_owner_only(client, fake_broker):  # noqa: F811
     c = client(role="member")
     assert c.get("/account").status_code == 403
     assert c.post("/account/sign-out").status_code == 403
+    assert c.post("/account/unlink/google").status_code == 403
     assert c.post("/account/prompt-seen").status_code == 403
 
 
@@ -327,4 +536,34 @@ def test_routes_404_in_server_mode(client, fake_broker):  # noqa: F811
     c = client(mode="server")
     assert c.get("/account").status_code == 404
     assert c.post("/account/sign-out").status_code == 404
+    assert c.post("/account/unlink/google").status_code == 404
     assert c.post("/account/prompt-seen").status_code == 404
+
+
+def test_logged_in_second_provider_email_collision_refused(client, fake_broker, pg_dsn):  # noqa: F811
+    c = client(db=True)
+    g = _identity("google")
+    _sign_in(c, fake_broker, g)
+    other_email = f"taken-{_uid()}@example.com"
+    db_run(pg_dsn, "INSERT INTO users (id, email) VALUES ($1, $2)", uuid.uuid4(), other_email)
+    assert "already linked to another profile" in _sign_in(c, fake_broker, _identity("github", email=other_email))
+    assert [i["provider"] for i in _identities(pg_dsn, c.user_id)] == ["google"]
+    assert _user(pg_dsn, c.user_id) == {"email": g["email"], "display_name": "Ada Lovelace"}
+
+
+def test_unlink_last_while_signed_out_clears_saved_profile(client, fake_broker, pg_dsn, tmp_path):  # noqa: F811
+    _drop_local_user(pg_dsn)
+    try:
+        c = client(db=True)
+        _sign_in(c, fake_broker, _identity("google"))
+        c.post("/account/sign-out")
+        assert _config(tmp_path)["account_signed_out"]
+        assert c.post("/account/unlink/google").status_code == 200
+        assert _identities(pg_dsn, c.user_id) == []
+        assert not _config(tmp_path).get("account_signed_out")
+        # A later sign-in is a plain first sign-in.
+        gh = _identity("github", name="Grace")
+        assert "Signed in as Grace" in _sign_in(c, fake_broker, gh)
+        assert _user(pg_dsn, c.user_id) == {"email": gh["email"], "display_name": "Grace"}
+    finally:
+        _drop_local_user(pg_dsn)

@@ -1,10 +1,16 @@
-"""Desktop optional app sign-in: a Google/GitHub identity for the local user.
+"""Desktop optional app sign-in: Google/GitHub identities for the local user.
 
 Identity only, not access control: the app still signs the local user in
-automatically (/auth/local). Signing in links one oauth_identities row to that
-user and sets their email/display name; signing out removes the link and
-restores the local placeholder email. Desktop mode only (404 otherwise).
-Never log identities from this module.
+automatically (/auth/local). Signing in links oauth_identities rows (at most
+one per provider) to that user and sets their email/display name.
+
+"Logged in" = at least one identity row AND desktop.json has no
+`account_signed_out`. Signing out keeps the identity rows, saves the profile's
+name/email under `account_signed_out` and restores the local placeholder; a
+later sign-in with a kept identity, or with a verified email matching the saved
+one or a kept identity's, restores that profile. Unlinking deletes one
+identity. Desktop mode only (404 otherwise). Never log identities or emails
+from this module.
 """
 
 import uuid
@@ -12,7 +18,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.routes import connect
@@ -50,9 +56,55 @@ def _display_name(name: str, email: str | None) -> str:
     return "You"
 
 
+SIGNED_OUT_KEY = "account_signed_out"
+
+
+def _saved_profile() -> dict | None:
+    """The profile saved by sign-out, or None when not signed out."""
+    saved = desktop_state.load_config().get(SIGNED_OUT_KEY)
+    return saved if isinstance(saved, dict) else None
+
+
+def _real_email(value) -> str | None:
+    """A usable email: non-empty and not the local placeholder."""
+    value = str(value or "").strip()
+    return value if value and value.lower() != LOCAL_EMAIL else None
+
+
+async def _identities(session: AsyncSession, user_id: uuid.UUID) -> list[OAuthIdentity]:
+    return list(
+        (
+            await session.execute(
+                select(OAuthIdentity)
+                .where(OAuthIdentity.user_id == user_id)
+                .order_by(OAuthIdentity.created_at, OAuthIdentity.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+async def _email_taken(session: AsyncSession, email: str, user_id: uuid.UUID) -> bool:
+    row = (
+        await session.execute(
+            select(User.id).where(func.lower(User.email) == email.lower(), User.id != user_id).limit(1)
+        )
+    ).first()
+    return row is not None
+
+
+async def _local_email_taken(session: AsyncSession, user_id: uuid.UUID) -> bool:
+    row = (
+        await session.execute(select(User.id).where(User.email == LOCAL_EMAIL, User.id != user_id).limit(1))
+    ).first()
+    return row is not None
+
+
 async def link_identity(session: AsyncSession, user_id: uuid.UUID, result: dict) -> str:
     """connect.IDENTITY_HANDLER: link a Worker identity result
     ({provider, provider_user_id, email|None, name}) to the local user.
+    The Worker only ever returns provider-verified emails (or None).
     Returns the display name; raises ValueError(message) to refuse."""
     provider = result.get("provider")
     provider_user_id = str(result.get("provider_user_id") or "").strip()
@@ -74,28 +126,38 @@ async def link_identity(session: AsyncSession, user_id: uuid.UUID, result: dict)
     ).scalar_one_or_none()
     if existing is not None and existing.user_id != user_id:
         raise ValueError(COLLISION)
-    if email is None and user.email != LOCAL_EMAIL:
-        # No email from this provider: fall back to the local placeholder (as sign-out does), never keep the
-        # previous provider's email. Same uniqueness guard as sign-out.
-        clash = (
-            await session.execute(select(User.id).where(User.email == LOCAL_EMAIL, User.id != user_id).limit(1))
-        ).first()
-        if clash is not None:
-            raise ValueError(LOCAL_CLASH)
-    if email is not None:
-        taken = (
-            await session.execute(
-                select(User.id).where(func.lower(User.email) == email.lower(), User.id != user_id).limit(1)
-            )
-        ).first()
-        if taken is not None:
-            raise ValueError(COLLISION)
+    if email is not None and await _email_taken(session, email, user_id):
+        raise ValueError(COLLISION)
 
-    # One identity at a time: signing in with the other provider replaces the link.
-    others = select(OAuthIdentity).where(OAuthIdentity.user_id == user_id)
-    if existing is not None:
-        others = others.where(OAuthIdentity.id != existing.id)
-    for row in (await session.execute(others)).scalars().all():
+    kept = await _identities(session, user_id)
+    saved = _saved_profile()
+
+    if kept and saved is None:
+        # Logged in: add (or update) this provider alongside the others; the profile stays as it is.
+        new_email = email if user.email == LOCAL_EMAIL and email is not None else user.email
+        new_name = user.display_name or name
+        drop = []
+    elif kept:
+        # Signed out with identities kept: restore that profile if this sign-in is the same person.
+        wanted = {e.lower() for e in [_real_email(saved.get("email")), *(i.email for i in kept)] if _real_email(e)}
+        match = existing is not None or (email is not None and email.lower() in wanted)
+        if match:
+            new_email = _real_email(saved.get("email")) or email or LOCAL_EMAIL
+            new_name = str(saved.get("name") or "").strip() or name
+            if new_email != LOCAL_EMAIL and await _email_taken(session, new_email, user_id):
+                raise ValueError(COLLISION)
+            drop = []
+        else:
+            new_email, new_name, drop = email or LOCAL_EMAIL, name, kept
+    else:
+        new_email, new_name, drop = email or LOCAL_EMAIL, name, []
+
+    if new_email == LOCAL_EMAIL and user.email != LOCAL_EMAIL and await _local_email_taken(session, user_id):
+        raise ValueError(LOCAL_CLASH)
+
+    # At most one identity per provider: another account of the same provider replaces it.
+    drop = drop + [i for i in kept if i.provider == provider and i is not existing and i not in drop]
+    for row in drop:
         await session.delete(row)
     await session.flush()
 
@@ -108,14 +170,21 @@ async def link_identity(session: AsyncSession, user_id: uuid.UUID, result: dict)
     else:
         existing.email = email
 
-    user.email = email if email is not None else LOCAL_EMAIL
-    user.display_name = name
+    user.email = new_email
+    user.display_name = new_name
     user.updated_at = datetime.now(timezone.utc)
     await session.commit()
-    return name
+    if saved is not None:
+        desktop_state.save_config(**{SIGNED_OUT_KEY: None})
+    return new_name
 
 
 connect.IDENTITY_HANDLER = link_identity
+
+
+class LinkedIdentity(BaseModel):
+    provider: str
+    email: str | None
 
 
 class AccountStatus(BaseModel):
@@ -123,6 +192,7 @@ class AccountStatus(BaseModel):
     provider: str | None
     email: str | None
     name: str | None
+    identities: list[LinkedIdentity]
     broker_configured: bool
     prompt_seen: bool
 
@@ -131,43 +201,73 @@ class AccountStatus(BaseModel):
 async def account_status(
     auth: AuthContext = Depends(_owner), session: AsyncSession = Depends(get_session)
 ) -> AccountStatus:
-    identity = (
-        await session.execute(
-            select(OAuthIdentity)
-            .where(OAuthIdentity.user_id == auth.user_id)
-            .order_by(OAuthIdentity.created_at.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    user = await session.get(User, auth.user_id) if identity is not None else None
+    identities = await _identities(session, auth.user_id)
+    signed_in = bool(identities) and _saved_profile() is None
+    user = await session.get(User, auth.user_id) if signed_in else None
+    if user is None:
+        signed_in, identities = False, []
     return AccountStatus(
-        signed_in=identity is not None,
-        provider=identity.provider if identity else None,
-        email=identity.email if identity else None,
+        signed_in=signed_in,
+        provider=identities[0].provider if identities else None,
+        email=_real_email(user.email) if user else None,
         name=user.display_name if user else None,
+        identities=[LinkedIdentity(provider=i.provider, email=i.email) for i in identities],
         broker_configured=bool(settings.auth_broker_url),
         prompt_seen=bool(desktop_state.load_config().get("account_prompt_seen", False)),
     )
 
 
+async def _reset_to_local(session: AsyncSession, user: User) -> None:
+    """Back to the unnamed local profile; 409 when another user holds the placeholder email."""
+    if user.email != LOCAL_EMAIL and await _local_email_taken(session, user.id):
+        raise HTTPException(status_code=409, detail=LOCAL_CLASH)
+    user.email = LOCAL_EMAIL
+    user.display_name = None
+    user.updated_at = datetime.now(timezone.utc)
+
+
 @router.post("/sign-out")
 async def sign_out(auth: AuthContext = Depends(_owner), session: AsyncSession = Depends(get_session)) -> dict:
-    """Remove the identity link and restore the local placeholder profile.
+    """Restore the local placeholder profile, keeping the linked identities so
+    signing in again with either one brings this profile back.
     Documents, chats and connections are untouched."""
     user = await session.get(User, auth.user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="Not found")
-    if user.email != LOCAL_EMAIL:
-        clash = (
-            await session.execute(select(User.id).where(User.email == LOCAL_EMAIL, User.id != user.id).limit(1))
-        ).first()
-        if clash is not None:
-            raise HTTPException(status_code=409, detail=LOCAL_CLASH)
-    await session.execute(delete(OAuthIdentity).where(OAuthIdentity.user_id == user.id))
-    user.email = LOCAL_EMAIL
-    user.display_name = None
-    user.updated_at = datetime.now(timezone.utc)
+    logged_in = bool(await _identities(session, user.id)) and _saved_profile() is None
+    profile = {"name": user.display_name, "email": user.email}
+    await _reset_to_local(session, user)
+    if logged_in:
+        desktop_state.save_config(**{SIGNED_OUT_KEY: profile})
     await session.commit()
+    return {}
+
+
+@router.post("/unlink/{provider}")
+async def unlink(
+    provider: str, auth: AuthContext = Depends(_owner), session: AsyncSession = Depends(get_session)
+) -> dict:
+    """Remove one linked identity. Removing the last one signs out fully."""
+    user = await session.get(User, auth.user_id)
+    identities = await _identities(session, auth.user_id)
+    gone = [i for i in identities if i.provider == provider]
+    if user is None or provider not in IDENTITY_PROVIDERS or not gone:
+        raise HTTPException(status_code=404, detail="Not found")
+    remaining = [i for i in identities if i.provider != provider]
+    if not remaining:
+        await _reset_to_local(session, user)
+    else:
+        gone_emails = {i.email.lower() for i in gone if i.email}
+        if user.email and user.email.lower() in gone_emails:
+            replacement = next((i.email for i in remaining if i.email), None)
+            if replacement is not None and not await _email_taken(session, replacement, user.id):
+                user.email = replacement
+                user.updated_at = datetime.now(timezone.utc)
+    for row in gone:
+        await session.delete(row)
+    await session.commit()
+    if not remaining and _saved_profile() is not None:
+        desktop_state.save_config(**{SIGNED_OUT_KEY: None})
     return {}
 
 
