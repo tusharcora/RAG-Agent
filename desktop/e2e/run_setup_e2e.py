@@ -175,6 +175,27 @@ asyncio.run(main(sys.argv[1]))
     subprocess.run([str(PY), "-I", "-c", code, sock], check=True)
 
 
+def seed_connection_document(home: str) -> None:
+    """One document + chunk under the existing Notion connection (path D's connected one)."""
+    code = r'''
+import asyncio, sys, uuid
+import asyncpg
+
+async def main(sock):
+    c = await asyncpg.connect(host=sock, user="postgres", database="postgres")
+    conn = await c.fetchval("select id from oauth_connections where provider = 'notion'")
+    doc = uuid.uuid4()
+    await c.execute("insert into documents (id, source, external_id, connection_id, title, url) values ($1,'notion','e2e-p1',$2,'Kept page','https://example.com/kept')", doc, conn)
+    await c.execute("insert into chunks (id, document_id, chunk_index, content) values ($1,$2,0,'Kept content.')", uuid.uuid4(), doc)
+    await c.close()
+
+asyncio.run(main(sys.argv[1]))
+'''
+    pid = Path(home, "pgdata", "postmaster.pid").read_text().splitlines()
+    sock = pid[4].strip()
+    subprocess.run([str(PY), "-I", "-c", code, sock], check=True)
+
+
 def launch_browser(p):
     kwargs = {"executable_path": CHROMIUM} if CHROMIUM else {}
     return p.chromium.launch(args=["--no-sandbox"], **kwargs)
@@ -368,6 +389,38 @@ def path_d() -> None:
             popup.close()
             expect(page.get_by_text("E2E Workspace").first).to_be_visible(timeout=20000)
             print("D: Notion popup landed on 'Connected to Notion'; card shows the workspace")
+
+            # Disconnect, keeping the (one seeded) document.
+            seed_connection_document(home)
+            page.reload()
+            page.get_by_role("button", name="Disconnect", exact=True).click()
+            dialog = page.get_by_role("dialog", name="Disconnect Notion?")
+            expect(dialog.get_by_role("radio", name=re.compile(r"Remove its 1 synced document too"))).to_be_checked()
+            dialog.get_by_text("Keep them searchable").click()  # react-aria's radio input is visually hidden
+            expect(dialog.get_by_role("radio", name=re.compile(r"Keep them searchable"))).to_be_checked()
+            dialog.get_by_role("button", name="Disconnect", exact=True).click()
+            expect(page.get_by_text("Disconnected · 1 document kept")).to_be_visible(timeout=20000)
+            expect(page.get_by_role("button", name="Remove them")).to_be_visible()
+            print("D: disconnected keeping documents; card shows 'Disconnected · 1 document kept'")
+
+            # Connect again (same workspace): connected, document kept.
+            with ctx.expect_page() as popup_info:
+                page.get_by_role("button", name="Connect again").click()
+            popup = popup_info.value
+            expect(popup.get_by_role("heading", name="Notion is connected.")).to_be_visible(timeout=20000)
+            popup.close()
+            expect(page.get_by_role("button", name="Disconnect", exact=True)).to_be_visible(timeout=20000)
+            expect(page.get_by_text("Disconnected · 1 document kept")).to_have_count(0)
+            print("D: Connect again reconnected Notion")
+
+            # Disconnect, removing the documents: the card is back to plain Connect.
+            page.get_by_role("button", name="Disconnect", exact=True).click()
+            dialog = page.get_by_role("dialog", name="Disconnect Notion?")
+            dialog.get_by_role("button", name="Disconnect", exact=True).click()
+            expect(page.get_by_role("button", name="Connect Notion")).to_be_visible(timeout=20000)
+            expect(page.get_by_text("Disconnected ·")).to_have_count(0)
+            expect(page.get_by_text("E2E Workspace")).to_have_count(0)
+            print("D: disconnected removing documents; card back to 'Connect Notion'")
 
             expect(page.get_by_text("E2E Person").first).to_be_visible(timeout=10000)
             print("D: sidebar shows E2E Person")
