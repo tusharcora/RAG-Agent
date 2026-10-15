@@ -2,11 +2,18 @@ import { API_BASE, ApiError } from "./api";
 
 export type ConnectPurpose = "notion" | "jira" | "google" | "github";
 
+export interface LinkedIdentity {
+  provider: string;
+  email: string | null;
+}
+
 export interface Account {
   signed_in: boolean;
   provider: string | null;
   email: string | null;
   name: string | null;
+  /** Linked sign-in identities, oldest first; empty when signed out. */
+  identities: LinkedIdentity[];
   broker_configured: boolean;
   prompt_seen: boolean;
 }
@@ -86,6 +93,11 @@ export function getAccount(): Promise<Account> {
 
 export function signOut(): Promise<void> {
   return request<void>("POST", "/account/sign-out").then(() => undefined);
+}
+
+/** Removes one linked sign-in. Removing the last one signs out fully. */
+export function unlink(provider: "google" | "github"): Promise<void> {
+  return request<void>("POST", `/account/unlink/${provider}`).then(() => undefined);
 }
 
 export function markPromptSeen(): Promise<void> {

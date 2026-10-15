@@ -151,8 +151,14 @@ export default function SettingsPage() {
 
       <McpSettings canEdit={canEdit} />
 
-      {/* Re-fetch when signing in/out renames the local member. */}
-      <MembersSection key={account?.signed_in ? `${account.provider}:${account.email}` : "local"} />
+      {/* Re-fetch when signing in/out, linking or unlinking changes the local member. */}
+      <MembersSection
+        key={
+          account?.signed_in
+            ? `${account.name}:${account.email}:${account.identities.map((i) => `${i.provider}=${i.email ?? ""}`).join(",")}`
+            : "local"
+        }
+      />
 
       {canEdit && (
         <>
