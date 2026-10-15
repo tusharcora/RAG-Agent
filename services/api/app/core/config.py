@@ -14,8 +14,8 @@ class Settings(BaseSettings):
     otel_exporter_otlp_endpoint: str = "http://localhost:4317"
     otel_service_name: str = "api"
 
-    cors_origins: list[str] = ["http://localhost:3000"]
-    frontend_url: str = "http://localhost:3000"
+    cors_origins: list[str] = ["http://localhost:3001", "http://localhost:3000"]
+    frontend_url: str = "http://localhost:3001"
 
     # Idempotency / dedupe
     event_dedupe_ttl_seconds: int = 60 * 60 * 24  # 24h

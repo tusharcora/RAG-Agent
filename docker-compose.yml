@@ -62,7 +62,11 @@ services:
       RABBITMQ_URL: amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASSWORD:-guest}@rabbitmq:5672/
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       OTEL_SERVICE_NAME: api
-      FRONTEND_URL: http://localhost:3000
+      FRONTEND_URL: http://localhost:3001
+    # Lets a "local model" URL like http://host.docker.internal:11434/v1
+    # (Ollama) or :1234/v1 (LM Studio) reach a model server on the host.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8000:8000"
     depends_on:
@@ -108,7 +112,7 @@ services:
     environment:
       NEXT_PUBLIC_API_URL: http://localhost:8000
     ports:
-      - "3000:3000"
+      - "3001:3000"
     depends_on:
       - api
     volumes:
@@ -150,7 +154,7 @@ services:
       - ./infra/grafana/provisioning:/etc/grafana/provisioning
       - grafana-data:/var/lib/grafana
     ports:
-      - "3001:3000"
+      - "3002:3000"
     depends_on:
       - prometheus
 
