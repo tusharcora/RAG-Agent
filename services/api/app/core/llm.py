@@ -32,7 +32,6 @@ from app.models.rag import OrgLlmCredential, OrgLlmSettings
 logger = logging.getLogger(__name__)
 
 PROVIDERS = ("gemini", "anthropic", "openai", "local")
-ANTHROPIC_URL = "https://api.anthropic.com/v1"
 OPENAI_URL = "https://api.openai.com/v1"
 ANTHROPIC_VERSION = "2023-06-01"
 MAX_OUTPUT_TOKENS = 4096
@@ -197,7 +196,7 @@ async def _stream_anthropic(cfg: LlmConfig, system: str, history: list[dict], us
     headers = {"x-api-key": cfg.api_key, "anthropic-version": ANTHROPIC_VERSION, "content-type": "application/json"}
     truncated = False
     async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=15)) as client:
-        async with client.stream("POST", f"{ANTHROPIC_URL}/messages", json=payload, headers=headers) as resp:
+        async with client.stream("POST", f"{settings.anthropic_base_url}/messages", json=payload, headers=headers) as resp:
             await _raise_for_status(resp, "Anthropic")
             async for event, data in _sse_events(resp):
                 if not data:
@@ -278,7 +277,7 @@ async def list_models(cfg: LlmConfig) -> list[str]:
                 if not cfg.api_key:
                     raise LlmError("Enter an Anthropic API key first.")
                 resp = await client.get(
-                    f"{ANTHROPIC_URL}/models",
+                    f"{settings.anthropic_base_url}/models",
                     params={"limit": 100},
                     headers={"x-api-key": cfg.api_key, "anthropic-version": ANTHROPIC_VERSION},
                 )
@@ -290,6 +289,6 @@ async def list_models(cfg: LlmConfig) -> list[str]:
             await _raise_for_status(resp, "OpenAI" if cfg.provider == "openai" else "Local model")
             return sorted(m["id"] for m in resp.json().get("data", []))
     except httpx.ConnectError as exc:
-        raise LlmError(f"Couldn't reach {_openai_base(cfg) if cfg.provider != 'anthropic' else ANTHROPIC_URL}: {exc}") from exc
+        raise LlmError(f"Couldn't reach {_openai_base(cfg) if cfg.provider != 'anthropic' else settings.anthropic_base_url}: {exc}") from exc
     except httpx.TimeoutException as exc:
         raise LlmError("The provider didn't answer within 20 seconds.") from exc
