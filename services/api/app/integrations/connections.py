@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.crypto import encrypt_token
 from app.integrations.github_state import reset_github_state
 from app.models.rag import Document, OAuthConnection
@@ -90,4 +91,37 @@ async def save_jira_connection(
     await session.commit()
 
     logger.info("Jira connected: site=%s", connection.workspace_name)
+    return connection
+
+
+async def save_github_connection(session: AsyncSession, org_id: uuid.UUID, result: dict) -> OAuthConnection:
+    """`result` is a GitHub App user token plus identity: access_token, refresh_token,
+    expires_in, user_id, login and (desktop only) app_slug. Installations are not stored;
+    each sync lists them with the user's token. Reconnecting as a different GitHub user
+    deletes the old user's documents and sync state (see `_reuse_row`)."""
+    now = datetime.now(timezone.utc)
+    login = result["login"]
+    user_id = str(result["user_id"])
+    row = await session.execute(
+        select(OAuthConnection).where(OAuthConnection.provider == "github", OAuthConnection.org_id == org_id)
+    )
+    connection = row.scalar_one_or_none()
+    if connection is None:
+        connection = OAuthConnection(id=uuid.uuid4(), org_id=org_id, provider="github", access_token="")
+        session.add(connection)
+    else:
+        await _reuse_row(session, connection, user_id)
+
+    connection.workspace_id = user_id
+    connection.workspace_name = login
+    connection.site_url = f"https://github.com/{login}"
+    # The app's slug (for the choose-repositories link); bot_id is otherwise Notion-only.
+    connection.bot_id = result.get("app_slug") or settings.github_source_app_slug
+    connection.access_token = encrypt_token(result["access_token"])
+    connection.refresh_token = encrypt_token(result.get("refresh_token"))
+    connection.expires_at = now + timedelta(seconds=result.get("expires_in") or 28800)
+    connection.updated_at = now
+    await session.commit()
+
+    logger.info("GitHub connected: login=%s", login)
     return connection

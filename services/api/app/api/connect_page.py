@@ -98,6 +98,7 @@ h1 em{font-style:italic;color:#111113;padding:0 .12em;margin:0 -.04em;background
 .who span{display:block;font-size:13.5px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .tag{flex:none;font:500 10.5px/1 "Geist Mono",ui-monospace,monospace;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:6px 10px}
 .msg{width:100%;padding:14px 16px;text-align:left;font-size:14.5px;border-radius:14px;border:1px solid rgb(var(--err)/.35);background:rgb(var(--err)/.08)}
+.lead a{color:var(--ink)}
 .btn{display:inline-flex;align-items:center;height:44px;padding:0 22px;border-radius:999px;background:var(--ink);color:var(--bg);font-size:14.5px;font-weight:500;text-decoration:none}
 .btn:focus-visible{outline:2px solid rgb(var(--hl));outline-offset:3px}
 .foot{width:100%;display:flex;align-items:center;justify-content:center;gap:9px;padding-top:22px;border-top:1px solid var(--line);font-size:13px;color:var(--faint)}
@@ -135,9 +136,13 @@ def render(
     title: str,
     card: Card | None = None,
     message: str | None = None,
+    lead: str | None = None,
+    link: tuple[str, str] | None = None,
 ) -> HTMLResponse:
     """`title` is the plain summary ("Signed in as Ada", "Connected to Notion",
-    or the error) used for the tab title; the body is built per `kind`."""
+    or the error) used for the tab title; the body is built per `kind`. For
+    `connected`, `lead` replaces the default paragraph and `link` (url, text)
+    is appended to it as an anchor. Everything is escaped."""
     name = PROVIDER_NAME.get(provider or "", "")
     if kind == "signed_in" and card:
         first = card.title.split()[0] if card.title.split() else card.title
@@ -151,11 +156,16 @@ def render(
     elif kind == "connected":
         eyebrow = '<span class="dot"></span>Connected'
         headline = f"{_e(name)} is <em>connected</em>."
-        lead = (
-            "Your first sync has started in the app. New content will show up in the knowledge base "
+        lead_html = _e(
+            lead
+            or "Your first sync has started in the app. New content will show up in the knowledge base "
             "within a few minutes. You can close this tab."
         )
-        body = f'<p class="lead">{lead}</p>' + (_card(card, provider or "") if card else "")
+        if link:
+            lead_html += (
+                f' <a href="{_e(link[0])}" target="_blank" rel="noopener noreferrer">{_e(link[1])}</a>'
+            )
+        body = f'<p class="lead">{lead_html}</p>' + (_card(card, provider or "") if card else "")
     else:
         eyebrow = '<span class="dot err"></span>Not connected'
         headline = "That didn&#x27;t go through."

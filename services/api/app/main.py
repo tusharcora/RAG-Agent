@@ -8,7 +8,7 @@ from app.core.telemetry import instrument_app, setup_telemetry
 from app.core.queue import get_queue_connection, close_queue_connection
 from app.core.db import init_engine, dispose_engine
 from app.core import auto_sync
-from app.api.routes import health, events, notion_oauth, jira_oauth, sync, query, sessions, connections, documents, auth, org, social_auth, usage, dlq, llm_settings, mcp, setup, connect, account
+from app.api.routes import health, events, notion_oauth, jira_oauth, github_source_oauth, sync, query, sessions, connections, documents, auth, org, social_auth, usage, dlq, llm_settings, mcp, setup, connect, account
 from app.core.schema import ensure_schema
 
 
@@ -52,6 +52,7 @@ app.include_router(social_auth.github_router, prefix="/auth/github", tags=["auth
 
 app.include_router(notion_oauth.router, prefix="/oauth/notion", tags=["rag-agent"])
 app.include_router(jira_oauth.router, prefix="/oauth/jira", tags=["rag-agent"])
+app.include_router(github_source_oauth.router, prefix="/oauth/github_source", tags=["rag-agent"])
 app.include_router(sync.router, prefix="/sync", tags=["rag-agent"])
 app.include_router(query.router, prefix="/query", tags=["rag-agent"])
 app.include_router(sessions.router, prefix="/sessions", tags=["rag-agent"])

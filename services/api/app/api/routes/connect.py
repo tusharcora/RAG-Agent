@@ -32,15 +32,23 @@ from app.api import connect_page
 from app.core.auth import AuthContext, require_auth, require_role
 from app.core.config import settings
 from app.core.db import get_session
-from app.integrations import broker
-from app.integrations.connections import save_jira_connection, save_notion_connection
+from app.integrations import broker, github_api
+from app.integrations.connections import save_github_connection, save_jira_connection, save_notion_connection
 
 logger = logging.getLogger(__name__)
 
 FLOW_TTL = 600  # seconds
-PURPOSES = ("notion", "jira", "google", "github")
+PURPOSES = ("notion", "jira", "github_repos", "google", "github")
 IDENTITY_PURPOSES = ("google", "github")
-DISPLAY_NAME = {"notion": "Notion", "jira": "Jira", "google": "Google", "github": "GitHub"}
+DISPLAY_NAME = {
+    "notion": "Notion",
+    "jira": "Jira",
+    "github_repos": "GitHub",
+    "google": "Google",
+    "github": "GitHub",
+}
+# The finish page's provider tile/name, where it differs from the flow purpose.
+PAGE_PROVIDER = {"github_repos": "github"}
 
 NOT_CONFIGURED = "Sign-in service isn't configured."
 FAILED = "Couldn't finish signing in. Start again from the app."
@@ -125,7 +133,7 @@ async def start(purpose: str, request: Request, auth: AuthContext = Depends(_own
 
 def _fail(flow: Flow, message: str) -> HTMLResponse:
     flow.status, flow.message = "error", message
-    return connect_page.render("error", flow.purpose, title=message, message=message)
+    return connect_page.render("error", PAGE_PROVIDER.get(flow.purpose, flow.purpose), title=message, message=message)
 
 
 def _expired() -> HTMLResponse:
@@ -143,6 +151,22 @@ async def asset(name: str) -> FileResponse:
         media_type=connect_page.ASSET_TYPES[path.suffix],
         headers={"Cache-Control": "public, max-age=604800", "X-Content-Type-Options": "nosniff"},
     )
+
+
+async def _github_card(result: dict, slug: str | None) -> tuple[connect_page.Card, dict]:
+    """The finish-page card (and extra page args) for a saved GitHub connection.
+    The repository count is best effort: when it can't be had the subtitle is omitted."""
+    login = result["login"]
+    installations = result.get("installations") or []
+    total = await github_api.count_repositories(result["access_token"], installations) if installations else 0
+    if total == 0:
+        extra: dict = {"lead": "After choosing them on GitHub, come back here and press Sync now."}
+        if slug:
+            extra["link"] = (f"https://github.com/apps/{slug}/installations/new", "Choose repositories on GitHub")
+        return connect_page.Card(login, "No repositories yet"), extra
+    if total is None:
+        return connect_page.Card(login), {}
+    return connect_page.Card(login, f"{total} {'repository' if total == 1 else 'repositories'}"), {}
 
 
 @router.get("/finish")
@@ -167,6 +191,7 @@ async def finish(state: str = "", pickup: str = "", session: AsyncSession = Depe
             return _fail(flow, str(result["error"]) or FAILED)
 
         name = DISPLAY_NAME[flow.purpose]
+        page_extra: dict = {}
         try:
             if flow.purpose == "notion":
                 await save_notion_connection(session, flow.org_id, result)
@@ -180,6 +205,11 @@ async def finish(state: str = "", pickup: str = "", session: AsyncSession = Depe
                 kind = "connected"
                 host = urlparse(result["site_url"]).netloc or result["site_url"]
                 card = connect_page.Card(result.get("site_name") or host, host)
+            elif flow.purpose == "github_repos":
+                connection = await save_github_connection(session, flow.org_id, result)
+                headline = f"Connected to {name}"
+                kind = "connected"
+                card, page_extra = await _github_card(result, connection.bot_id)
             else:
                 handler = IDENTITY_HANDLER
                 if handler is None or flow.user_id is None:
@@ -198,7 +228,9 @@ async def finish(state: str = "", pickup: str = "", session: AsyncSession = Depe
             return _fail(flow, FAILED)
 
         flow.status, flow.message = "done", headline
-        return connect_page.render(kind, flow.purpose, title=headline, card=card)
+        return connect_page.render(
+            kind, PAGE_PROVIDER.get(flow.purpose, flow.purpose), title=headline, card=card, **page_extra
+        )
     finally:
         flow.redeeming = False
 
