@@ -1,3 +1,4 @@
+import logging
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -16,10 +17,13 @@ from app.core.auth import (
     require_role,
     verify_password,
 )
+from app.core import desktop_state
 from app.core.config import settings
 from app.core.db import get_session
 from app.core.ratelimit import check_rate_limit
 from app.models.rag import Organization, OrgInvite, OrgMember, ServiceToken, User
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -317,6 +321,61 @@ async def revoke_service_token(
 LOCAL_EMAIL = "you@this-computer.local"
 
 
+def _remember_local_user(user_id: uuid.UUID) -> None:
+    """Best effort: a failed write only means the next /auth/local finds the
+    user by the fallback again."""
+    if not settings.desktop_data_dir:
+        return
+    try:
+        desktop_state.save_config(local_user_id=str(user_id))
+    except OSError as exc:
+        logger.warning("couldn't record the local user in desktop.json: %s", type(exc).__name__)
+
+
+async def _first_membership(session: AsyncSession, user_id: uuid.UUID) -> OrgMember | None:
+    return (
+        await session.execute(
+            select(OrgMember).where(OrgMember.user_id == user_id).order_by(OrgMember.created_at).limit(1)
+        )
+    ).scalar_one_or_none()
+
+
+async def _find_local_user(session: AsyncSession) -> tuple[User, OrgMember, bool] | None:
+    """The desktop's one local user, independent of its email (signing in
+    with Google/GitHub replaces LOCAL_EMAIL). desktop.json's local_user_id
+    first; for installs from before that key: the user with LOCAL_EMAIL,
+    else the owner of the oldest workspace. Returns (user, membership,
+    found_by_key) or None when there's no local user yet."""
+    raw = desktop_state.load_config().get("local_user_id") if settings.desktop_data_dir else None
+    if raw:
+        try:
+            user = await session.get(User, uuid.UUID(str(raw)))
+        except ValueError:
+            user = None
+        member = await _first_membership(session, user.id) if user is not None else None
+        if member is not None:
+            return user, member, True
+
+    user = (await session.execute(select(User).where(User.email == LOCAL_EMAIL))).scalar_one_or_none()
+    member = await _first_membership(session, user.id) if user is not None else None
+    if member is not None:
+        return user, member, False
+
+    row = (
+        await session.execute(
+            select(User, OrgMember)
+            .join(OrgMember, OrgMember.user_id == User.id)
+            .join(Organization, Organization.id == OrgMember.org_id)
+            .where(OrgMember.role == "owner")
+            .order_by(Organization.created_at, Organization.id)
+            .limit(1)
+        )
+    ).first()
+    if row is not None:
+        return row[0], row[1], False
+    return None
+
+
 @router.post("/local")
 async def local_session(response: Response, session: AsyncSession = Depends(get_session)) -> MeResponse:
     """Desktop mode only: there's one person on this machine, so instead of a
@@ -326,8 +385,8 @@ async def local_session(response: Response, session: AsyncSession = Depends(get_
     if settings.app_mode != "desktop":
         raise HTTPException(status_code=404, detail="Not found")
 
-    user = (await session.execute(select(User).where(User.email == LOCAL_EMAIL))).scalar_one_or_none()
-    if user is None:
+    found = await _find_local_user(session)
+    if found is None:
         user = User(id=uuid.uuid4(), email=LOCAL_EMAIL, password_hash=None, display_name=None)
         session.add(user)
         await session.flush()
@@ -337,11 +396,12 @@ async def local_session(response: Response, session: AsyncSession = Depends(get_
         session.add(OrgMember(id=uuid.uuid4(), org_id=org.id, user_id=user.id, role="owner"))
         await session.commit()
         member_org, role = org, "owner"
+        _remember_local_user(user.id)
     else:
-        member = (
-            await session.execute(select(OrgMember).where(OrgMember.user_id == user.id).limit(1))
-        ).scalar_one()
+        user, member, by_key = found
         member_org, role = await session.get(Organization, member.org_id), member.role
+        if not by_key:
+            _remember_local_user(user.id)
 
     _set_session_cookie(response, create_access_token(user.id, member_org.id, role))
     return MeResponse(
