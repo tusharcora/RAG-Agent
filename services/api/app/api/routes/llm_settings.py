@@ -128,8 +128,13 @@ async def put_llm_settings(
     request: LlmSettingsIn, auth: AuthContext = Depends(require_auth), session: AsyncSession = Depends(get_session)
 ) -> LlmSettingsOut:
     require_role(auth, "owner", "admin")
+    return await apply_llm_choice(session, auth.org_id, request)
+
+
+async def apply_llm_choice(session: AsyncSession, org_id, request: LlmSettingsIn) -> LlmSettingsOut:
+    """Validates, stores and activates one provider choice for the org."""
     request = _clean(request)
-    active, creds = await _load(session, auth.org_id)
+    active, creds = await _load(session, org_id)
 
     if request.provider != "gemini":
         cred = creds.get(request.provider)
@@ -142,7 +147,7 @@ async def put_llm_settings(
             raise HTTPException(status_code=400, detail="Enter the model server's URL.")
 
         if cred is None:
-            cred = OrgLlmCredential(org_id=auth.org_id, provider=request.provider)
+            cred = OrgLlmCredential(org_id=org_id, provider=request.provider)
             session.add(cred)
             creds[request.provider] = cred
         cred.model = request.model
@@ -152,7 +157,7 @@ async def put_llm_settings(
             cred.api_key_hint = f"…{request.api_key[-4:]}" if len(request.api_key) >= 8 else "saved"
 
     if active is None:
-        active = OrgLlmSettings(org_id=auth.org_id)
+        active = OrgLlmSettings(org_id=org_id)
         session.add(active)
     active.provider = request.provider
     # The legacy per-row key columns are superseded by org_llm_credentials.
@@ -184,8 +189,13 @@ async def test_llm_settings(
     request: LlmSettingsIn, auth: AuthContext = Depends(require_auth), session: AsyncSession = Depends(get_session)
 ) -> TestResult:
     require_role(auth, "owner", "admin")
+    return await check_llm(session, auth.org_id, request)
+
+
+async def check_llm(session: AsyncSession, org_id, request: LlmSettingsIn) -> TestResult:
+    """Connects with the given (or stored) credentials and test-prompts the model."""
     request = _clean(request)
-    _, creds = await _load(session, auth.org_id)
+    _, creds = await _load(session, org_id)
     cfg = LlmConfig(
         provider=request.provider,
         model=request.model,

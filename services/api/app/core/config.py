@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     # --- RAG agent ---
     google_api_key: str = ""  # Google AI Studio key, used for query generation (Gemini)
     voyage_api_key: str = ""
+    voyage_base_url: str = "https://api.voyageai.com/v1"
 
     notion_client_id: str = ""
     notion_client_secret: str = ""

@@ -2,16 +2,20 @@
 
 import json
 import logging
+from typing import Literal
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.core import desktop_state
 from app.core.auth import AuthContext, require_auth, require_role
+from app.api.routes.llm_settings import LlmSettingsIn, apply_llm_choice, check_llm
 from app.core.config import settings
-from app.integrations import ollama
+from app.core.db import get_session
+from app.integrations import ollama, voyage
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +52,17 @@ class SetupStatus(BaseModel):
 
 class PullRequest(BaseModel):
     model: str
+
+
+class CompleteLocal(BaseModel):
+    answer_model: str
+
+
+class CompleteKeys(BaseModel):
+    voyage_api_key: str
+    provider: Literal["anthropic", "openai", "gemini"]
+    api_key: str
+    model: str | None = None
 
 
 def _required_models() -> list[str]:
@@ -108,3 +123,81 @@ async def pull(body: PullRequest) -> StreamingResponse:
             _IN_FLIGHT.discard(model)
 
     return StreamingResponse(stream(), media_type="text/event-stream")
+
+
+@router.post("/complete-local")
+async def complete_local(
+    body: CompleteLocal, auth: AuthContext = Depends(_owner), session: AsyncSession = Depends(get_session)
+) -> dict:
+    installed = await ollama.list_models() or []
+    have = set(installed) | {m.removesuffix(":latest") for m in installed}
+    for needed in (settings.ollama_embed_model, body.answer_model):
+        if needed.removesuffix(":latest") not in have:
+            raise HTTPException(status_code=400, detail=f"{needed} isn't installed in Ollama yet.")
+    await apply_llm_choice(
+        session,
+        auth.org_id,
+        LlmSettingsIn(provider="local", model=body.answer_model, base_url=f"{settings.ollama_url}/v1"),
+    )
+    desktop_state.save_config(setup_complete=True, embedding_provider="ollama")
+    desktop_state.schedule_restart()
+    return {"restarting": True}
+
+
+def _bad(field: str, message: str) -> HTTPException:
+    return HTTPException(status_code=400, detail={"field": field, "message": message})
+
+
+def _default_model(provider: str) -> str:
+    return {"anthropic": "claude-sonnet-5-5", "openai": "gpt-5-mini", "gemini": settings.query_model}[provider]
+
+
+async def _gemini_models(api_key: str) -> list[str]:
+    from google import genai
+
+    client = genai.Client(api_key=api_key)
+    return [m.name.removeprefix("models/") async for m in await client.aio.models.list()]
+
+
+@router.post("/complete-keys")
+async def complete_keys(
+    body: CompleteKeys, auth: AuthContext = Depends(_owner), session: AsyncSession = Depends(get_session)
+) -> dict:
+    # Validate everything first; nothing is written until every check passes.
+    voyage_key, api_key = body.voyage_api_key.strip(), body.api_key.strip()
+    model = (body.model or "").strip() or _default_model(body.provider)
+    if not voyage_key:
+        raise _bad("voyage_api_key", "Enter your Voyage API key.")
+    if not api_key:
+        raise _bad("api_key", "Enter your API key.")
+    try:
+        await voyage.check_key(voyage_key)
+    except ValueError as exc:
+        raise _bad("voyage_api_key", str(exc))
+    except httpx.HTTPError as exc:
+        raise _bad("voyage_api_key", f"Could not reach Voyage: {exc}")
+
+    request = LlmSettingsIn(provider=body.provider, model=model, api_key=api_key)
+    if body.provider == "gemini":
+        try:
+            models = await _gemini_models(api_key)
+        except Exception as exc:  # google-genai raises its own APIError types
+            raise _bad("api_key", f"Gemini rejected this key: {str(exc)[:200]}")
+        if model not in models:
+            raise _bad("model", f"Gemini has no model {model!r}. Available: {', '.join(models)}")
+    else:
+        result = await check_llm(session, auth.org_id, request)
+        if not result.ok:
+            if result.models:
+                raise _bad("model", f"{result.error} Available: {', '.join(result.models)}")
+            raise _bad("api_key", result.error or "The key didn't work.")
+
+    if body.provider == "gemini":
+        desktop_state.save_secrets(google_api_key=api_key)
+        await apply_llm_choice(session, auth.org_id, LlmSettingsIn(provider="gemini"))
+    else:
+        await apply_llm_choice(session, auth.org_id, request)
+    desktop_state.save_secrets(voyage_api_key=voyage_key)
+    desktop_state.save_config(setup_complete=True, embedding_provider="voyage")
+    desktop_state.schedule_restart()
+    return {"restarting": True}

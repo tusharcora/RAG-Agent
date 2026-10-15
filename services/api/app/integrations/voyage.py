@@ -11,7 +11,6 @@ from app.core.redis import get_redis
 
 logger = logging.getLogger(__name__)
 
-VOYAGE_API_URL = "https://api.voyageai.com/v1/embeddings"
 # Shared with services/worker's copy of this module — both hit the same
 # Voyage account/key (this service embeds query text at /query time, worker
 # embeds documents), so cumulative usage has to be tracked in one place both
@@ -126,7 +125,7 @@ async def embed_texts(texts: list[str], input_type: Literal["document", "query"]
         await _voyage_rate_gate.wait_turn()
         async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.post(
-                VOYAGE_API_URL,
+                f"{settings.voyage_base_url.rstrip('/')}/embeddings",
                 headers={"Authorization": f"Bearer {settings.voyage_api_key}"},
                 json={"input": texts, "model": settings.embedding_model, "input_type": input_type},
             )
@@ -171,3 +170,23 @@ async def _embed_ollama(texts: list[str], input_type: Literal["document", "query
         norm = sum(x * x for x in cut) ** 0.5 or 1.0
         out.append([x / norm for x in cut])
     return out
+
+
+async def check_key(api_key: str) -> None:
+    """One-input embed with this key (not settings.voyage_api_key), used by
+    desktop setup. Raises ValueError(<provider message>) when it's rejected."""
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{settings.voyage_base_url.rstrip('/')}/embeddings",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={"input": ["ok"], "model": settings.embedding_model, "input_type": "query"},
+        )
+    if resp.status_code in (401, 403):
+        try:
+            body = resp.json()
+            detail = body.get("detail") or body.get("error") or resp.text
+            message = detail if isinstance(detail, str) else str(detail)
+        except ValueError:
+            message = resp.text
+        raise ValueError(message[:300] or f"Voyage returned {resp.status_code}")
+    resp.raise_for_status()
