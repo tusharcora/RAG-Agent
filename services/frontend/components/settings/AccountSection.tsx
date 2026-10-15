@@ -14,7 +14,7 @@ const PROVIDER_LABEL: Record<string, string> = { google: "Google", github: "GitH
 export function AccountSection() {
   const { account, refresh } = useAuth();
   const [signingOut, setSigningOut] = useState(false);
-  const { flow, start, cancel } = useConnectFlow({ onSettled: () => void refresh() });
+  const { flow, start, cancel, starting } = useConnectFlow({ onSettled: () => void refresh() });
 
   if (!account?.broker_configured) return null;
 
@@ -59,15 +59,18 @@ export function AccountSection() {
             <Button color="tertiary" size="sm" onPress={cancel}>
               Cancel
             </Button>
+            <a href={flow.url} target="_blank" rel="noopener" className="text-sm font-semibold text-ink-400 underline-offset-2 hover:text-ink-100 hover:underline">
+              Reopen the sign-in page
+            </a>
           </div>
         ) : (
           <div className="flex flex-col items-start gap-3">
             <p className="text-sm text-ink-400">Sign in so your workspace has your name on it. It&apos;s optional.</p>
             <div className="flex flex-wrap gap-3">
-              <ProviderButton provider="google" onPress={() => start("google")}>
+              <ProviderButton provider="google" isDisabled={starting} onPress={() => start("google")}>
                 Continue with Google
               </ProviderButton>
-              <ProviderButton provider="github" onPress={() => start("github")}>
+              <ProviderButton provider="github" isDisabled={starting} onPress={() => start("github")}>
                 Continue with GitHub
               </ProviderButton>
             </div>

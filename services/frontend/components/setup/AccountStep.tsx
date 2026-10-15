@@ -16,7 +16,7 @@ export function AccountStep({ onDone }: { onDone: () => void }) {
     onDone();
   }
 
-  const { flow, start, cancel } = useConnectFlow({ onDone: () => void proceed() });
+  const { flow, start, cancel, starting } = useConnectFlow({ onDone: () => void proceed() });
   const waiting = flow.phase === "waiting";
 
   return (
@@ -35,12 +35,15 @@ export function AccountStep({ onDone }: { onDone: () => void }) {
           <button type="button" onClick={cancel} className="text-sm text-ink-400 underline-offset-2 transition hover:text-ink-100 hover:underline">
             Cancel
           </button>
+          <a href={flow.url} target="_blank" rel="noopener" className="text-sm text-ink-400 underline underline-offset-2 transition hover:text-ink-100">
+              Reopen the sign-in page
+            </a>
         </div>
       ) : (
         <div className="flex flex-col items-start gap-5">
           <div className="flex flex-wrap gap-3">
             {(["google", "github"] as const).map((p) => (
-              <ProviderButton key={p} provider={p} isDisabled={finishing} onPress={() => start(p as ConnectPurpose)}>
+              <ProviderButton key={p} provider={p} isDisabled={finishing || starting} onPress={() => start(p as ConnectPurpose)}>
                 Continue with {p === "google" ? "Google" : "GitHub"}
               </ProviderButton>
             ))}
@@ -54,7 +57,7 @@ export function AccountStep({ onDone }: { onDone: () => void }) {
           >
             Skip for now
           </button>
-          <p className="text-[13px] text-ink-500">Opens in your browser. We only receive your name, email and picture.</p>
+          <p className="text-[13px] text-ink-500">Opens in your browser. We only receive your name, email.</p>
         </div>
       )}
     </SetupShell>

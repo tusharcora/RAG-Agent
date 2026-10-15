@@ -54,8 +54,13 @@ export function ConnectionCard({
   const isAdmin = user?.role === "owner" || user?.role === "admin";
   const oneClick = IS_DESKTOP && !!account?.broker_configured && (status.provider === "notion" || status.provider === "jira");
   const [showSecretForm, setShowSecretForm] = useState(false);
-  const { flow, start, cancel, reopen } = useConnectFlow({
-    onDone: () => onSynced(), // shows the "Syncing…" badge while the first sync runs
+  const { flow, start, cancel, starting } = useConnectFlow({
+    // Connecting only saves the token: start the first sync, then show the "Syncing…" badge.
+    onDone: (purpose) => {
+      syncProvider(purpose)
+        .then(() => onSynced())
+        .catch(() => toast.error("Sync failed to start", "Press Sync now to try again."));
+    },
     onSettled: () => onChanged?.(),
   });
   const waiting = flow.phase === "waiting";
@@ -201,9 +206,16 @@ export function ConnectionCard({
             <Button color="secondary" size="sm" onPress={cancel}>
               Cancel
             </Button>
-            <Button color="tertiary" size="sm" onPress={reopen}>
-              Reopen the sign-in page
-            </Button>
+            {flow.phase === "waiting" && (
+              <a
+                href={flow.url}
+                target="_blank"
+                rel="noopener"
+                className="px-3 py-2 text-sm font-semibold text-ink-400 underline-offset-2 hover:text-ink-100 hover:underline"
+              >
+                Reopen the sign-in page
+              </a>
+            )}
           </div>
         </div>
       ) : (
@@ -220,12 +232,12 @@ export function ConnectionCard({
               Sync now
             </Button>
             {needsReconnect && oneClick && isAdmin && (
-              <Button color="primary" size="sm" onPress={() => start("jira")}>
+              <Button color="primary" size="sm" isDisabled={starting} onPress={() => start("jira")}>
                 Reconnect Jira
               </Button>
             )}
             {status.provider === "notion" && oneClick && isAdmin && (
-              <Button color="tertiary" size="sm" onPress={() => start("notion")}>
+              <Button color="tertiary" size="sm" isDisabled={starting} onPress={() => start("notion")}>
                 Choose pages in Notion
               </Button>
             )}
@@ -253,7 +265,7 @@ export function ConnectionCard({
           </>
         ) : oneClick ? (
           <>
-            <Button color="primary" size="sm" onPress={() => start(status.provider as ConnectPurpose)}>
+            <Button color="primary" size="sm" isDisabled={starting} onPress={() => start(status.provider as ConnectPurpose)}>
               Connect {LABELS[status.provider]}
             </Button>
             {status.provider === "notion" && (
@@ -275,7 +287,7 @@ export function ConnectionCard({
       {flow.phase === "error" && <p className="text-xs text-error-primary">{flow.message}</p>}
       {flow.phase === "error" && (
         <div>
-          <Button color="secondary" size="sm" onPress={() => start(status.provider as ConnectPurpose)}>
+          <Button color="secondary" size="sm" isDisabled={starting} onPress={() => start(status.provider as ConnectPurpose)}>
             Try again
           </Button>
         </div>

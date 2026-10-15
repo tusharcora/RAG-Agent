@@ -15,6 +15,7 @@ export type ConnectFlow =
  */
 export function useConnectFlow({ onDone, onSettled }: { onDone?: (purpose: ConnectPurpose) => void; onSettled?: () => void }) {
   const [flow, setFlow] = useState<ConnectFlow>({ phase: "idle" });
+  const [starting, setStarting] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const stateRef = useRef<string | null>(null);
   const cb = useRef({ onDone, onSettled });
@@ -22,13 +23,23 @@ export function useConnectFlow({ onDone, onSettled }: { onDone?: (purpose: Conne
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
+  const startingRef = useRef(false);
+
   const start = useCallback(async (purpose: ConnectPurpose) => {
+    if (startingRef.current) return; // a double-click must not open two provider windows
+    // Replacing a waiting flow: drop the old one on the server (fire-and-forget).
+    const old = stateRef.current;
+    if (old) cancelConnect(old).catch(() => {});
     abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     stateRef.current = null;
+    startingRef.current = true;
+    setStarting(true);
     try {
       const { state, url } = await startConnect(purpose);
+      startingRef.current = false;
+      setStarting(false);
       if (ctrl.signal.aborted) {
         cancelConnect(state).catch(() => {});
         return;
@@ -43,6 +54,8 @@ export function useConnectFlow({ onDone, onSettled }: { onDone?: (purpose: Conne
       cb.current.onDone?.(purpose);
       cb.current.onSettled?.();
     } catch (err) {
+      startingRef.current = false;
+      setStarting(false);
       if (ctrl.signal.aborted) return;
       stateRef.current = null;
       setFlow({ phase: "error", purpose, message: connectErrorMessage(err) });
@@ -64,5 +77,5 @@ export function useConnectFlow({ onDone, onSettled }: { onDone?: (purpose: Conne
     if (flow.phase === "waiting") window.open(flow.url, "_blank", "noopener");
   }, [flow]);
 
-  return { flow, start, cancel, reopen };
+  return { flow, start, cancel, reopen, starting };
 }
