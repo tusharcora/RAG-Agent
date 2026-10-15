@@ -216,7 +216,16 @@ function ChatPage() {
       sessionIdRef.current = detail.session_id;
       setSessionId(detail.session_id);
       setMessages(
-        detail.history.map((h) => ({ id: h.id, role: h.role as "user" | "assistant", content: h.content, feedback: h.feedback }))
+        detail.history.map((h) => ({
+          id: h.id,
+          role: h.role as "user" | "assistant",
+          content: h.content,
+          feedback: h.feedback,
+          sources: h.sources ?? undefined,
+          citedIndices: h.cited_indices ?? undefined,
+          model: h.model ?? undefined,
+          elapsedMs: h.elapsed_ms ?? undefined,
+        }))
       );
       setDraftAnswer("");
       setDraftSources([]);

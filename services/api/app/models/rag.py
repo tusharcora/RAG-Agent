@@ -256,6 +256,13 @@ class ChatMessage(Base):
     # given; only ever set on assistant messages, but nothing in this model
     # enforces that — see the migration's comment.
     feedback: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # infra/postgres/012_message_sources.sql — assistant answers only: the
+    # retrieved sources (as sent in the `sources` SSE event), which [n] were
+    # cited, and which model wrote it. Replayed by GET /sessions/{id}.
+    sources: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    cited_indices: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    elapsed_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class OrgLlmSettings(Base):

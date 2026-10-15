@@ -76,7 +76,13 @@ export function ConnectionCard({
     setSyncing(true);
     try {
       const result = await syncProvider(status.provider);
-      toast.success(`Queued ${result.published} item${result.published === 1 ? "" : "s"}${result.truncated ? " (capped)" : ""}`);
+      const removed = result.removed ?? 0;
+      toast.success(
+        `Queued ${result.published} item${result.published === 1 ? "" : "s"}${result.truncated ? " (capped)" : ""}`,
+        removed > 0
+          ? `Removed ${removed} that ${removed === 1 ? "is" : "are"} no longer shared or no longer exist${removed === 1 ? "s" : ""}.`
+          : undefined,
+      );
       onSynced();
     } catch {
       toast.error("Sync failed to start", "Check the API logs.");
@@ -154,9 +160,26 @@ export function ConnectionCard({
       <div className="flex flex-wrap items-center gap-2">
         {status.connected ? (
           <>
+            {status.provider === "notion" && (
+              <p className="w-full text-xs text-ink-500">
+                Notion only syncs pages shared with the integration. New pages inside a shared page are included
+                automatically.
+              </p>
+            )}
             <Button color="secondary" size="sm" isLoading={syncing} onPress={handleSync}>
               Sync now
             </Button>
+            {status.provider === "notion" && isAdmin && (
+              // Re-running Notion's OAuth flow reopens its page picker; the
+              // callback updates this org's existing connection in place.
+              <Button
+                color="tertiary"
+                size="sm"
+                href={`${API_BASE}/oauth/notion/authorize`}
+              >
+                Choose pages in Notion
+              </Button>
+            )}
             {isPolling && (
               <Badge type="pill-color" color="warning" size="sm" className="animate-pulse">
                 Syncing…

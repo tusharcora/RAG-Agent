@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import ForeignKey, Integer, Text, TIMESTAMP, UniqueConstraint, func
+from sqlalchemy import Computed, ForeignKey, Integer, Text, TIMESTAMP, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -172,7 +172,13 @@ class Document(Base):
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
     # GENERATED ALWAYS AS ... STORED in infra/postgres/005_document_search.sql —
     # Postgres computes this from `title`, the app never writes it directly.
-    search_vector: Mapped[str | None] = mapped_column(TSVECTOR, nullable=True)
+    # Computed() is required, not decorative: without it SQLAlchemy sends this
+    # column as NULL in every INSERT, and Postgres rejects any explicit value
+    # for a GENERATED ALWAYS column (GeneratedAlwaysError), so every new
+    # document failed to sync. Mirrors services/api/app/models/rag.py.
+    search_vector: Mapped[str | None] = mapped_column(
+        TSVECTOR, Computed("to_tsvector('english', title)", persisted=True), nullable=True
+    )
 
     # Scoped by connection_id rather than a separate org_id column: a connection
     # belongs to exactly one org (oauth_connections.org_id), so this is equivalent

@@ -27,7 +27,18 @@ export interface SessionSummary {
 
 export interface SessionDetail {
   session_id: string;
-  history: { id: string; role: string; content: string; feedback: "up" | "down" | null }[];
+  history: {
+    id: string;
+    role: string;
+    content: string;
+    feedback: "up" | "down" | null;
+    // Saved with each answer since sources started being persisted; null on
+    // user turns and on older answers.
+    sources?: Source[] | null;
+    cited_indices?: number[] | null;
+    model?: string | null;
+    elapsed_ms?: number | null;
+  }[];
 }
 
 export interface ConnectionStatus {

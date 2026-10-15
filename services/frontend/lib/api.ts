@@ -144,7 +144,7 @@ export function getConnections() {
 }
 
 export function syncProvider(provider: string) {
-  return post<{ published: number; truncated: boolean }>(`/sync/${provider}`);
+  return post<{ published: number; truncated: boolean; removed?: number }>(`/sync/${provider}`);
 }
 
 export function setConnectionVisibility(connectionId: string, mode: "org_wide" | "restricted") {

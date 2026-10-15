@@ -24,6 +24,11 @@ class HistoryTurn(BaseModel):
     role: str
     content: str
     feedback: str | None = None
+    # Assistant turns saved since 012_message_sources.sql; null otherwise.
+    sources: list[dict] | None = None
+    cited_indices: list[int] | None = None
+    model: str | None = None
+    elapsed_ms: int | None = None
 
 
 class SessionDetail(BaseModel):
