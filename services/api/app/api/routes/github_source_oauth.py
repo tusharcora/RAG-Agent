@@ -14,6 +14,7 @@ import json
 import logging
 import secrets
 import uuid
+from urllib.parse import urlencode
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -36,6 +37,10 @@ def _configured() -> None:
 
 
 router = APIRouter(dependencies=[Depends(_configured)])
+
+
+def _back_with_error(message: str) -> RedirectResponse:
+    return RedirectResponse(f"{settings.frontend_url}/connections?{urlencode({'error': message})}")
 
 
 @router.get("/authorize")
@@ -74,15 +79,16 @@ async def callback(
     if org_id != auth.org_id or user_id != auth.user_id:
         raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
 
+    # Denied or failed: back to the Connections page, which shows the message (a browser
+    # navigation lands here, so raw JSON would strand the person on the API's origin).
     if error or not code:
-        raise HTTPException(status_code=400, detail=github_api.NOT_GRANTED)
+        return _back_with_error(github_api.NOT_GRANTED)
     try:
         token_data = await github_api.exchange_code(code)
         user = await github_api.get_user(token_data["access_token"])
-    except github_api.GitHubDenied as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    except github_api.GitHubError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+    except github_api.GitHubError as exc:  # GitHubDenied's message is NOT_GRANTED
+        logger.info("GitHub source connect failed: %s", type(exc).__name__)
+        return _back_with_error(str(exc))
 
     await save_github_connection(
         session,

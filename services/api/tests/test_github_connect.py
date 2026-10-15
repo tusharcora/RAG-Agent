@@ -4,6 +4,7 @@
 
 import json
 import uuid
+from urllib.parse import urlencode
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -249,6 +250,8 @@ def web(make_client, monkeypatch):
             code = client.exchanges[-1]["code"]
             if code == "denied":
                 return httpx.Response(200, json={"error": "bad_verification_code"})
+            if code == "broken":
+                return httpx.Response(502, text="<html>bad gateway</html>")
             return httpx.Response(
                 200,
                 json={
@@ -314,15 +317,31 @@ def test_web_callback_saves_and_redirects(web, pg_dsn):
     assert f.decrypt(row["refresh_token"].encode()) == b"ghr_web_refresh"
 
 
-def test_web_callback_denied_is_400_and_saves_nothing(web, pg_dsn):
+def _error_redirect(message):
+    return f"{settings.frontend_url}/connections?" + urlencode({"error": message})
+
+
+def test_web_callback_denied_redirects_with_error_and_saves_nothing(web, pg_dsn):
     _state(web)
     r = web.get("/oauth/github_source/callback", params={"code": "denied", "state": "st"}, follow_redirects=False)
-    assert r.status_code == 400 and r.json()["detail"] == "GitHub access wasn't granted."
+    assert r.status_code in (302, 307)
+    assert r.headers["location"] == _error_redirect("GitHub access wasn't granted.")
     assert _rows(pg_dsn, web.org_id, "github") == []
     # GitHub's own "user said no" redirect carries error instead of code.
     _state(web, "st2")
     r = web.get("/oauth/github_source/callback", params={"error": "access_denied", "state": "st2"}, follow_redirects=False)
-    assert r.status_code == 400 and r.json()["detail"] == "GitHub access wasn't granted."
+    assert r.status_code in (302, 307)
+    assert r.headers["location"] == _error_redirect("GitHub access wasn't granted.")
+    assert web.exchanges[-1]["code"] == "denied"  # the second one never reached the exchange
+    assert len(web.exchanges) == 1
+
+
+def test_web_callback_github_failure_redirects_with_error(web, pg_dsn):
+    _state(web)
+    r = web.get("/oauth/github_source/callback", params={"code": "broken", "state": "st"}, follow_redirects=False)
+    assert r.status_code in (302, 307)
+    assert r.headers["location"] == _error_redirect("Couldn't reach GitHub.")
+    assert _rows(pg_dsn, web.org_id, "github") == []
 
 
 def test_web_callback_other_user_is_400_and_saves_nothing(web, pg_dsn):

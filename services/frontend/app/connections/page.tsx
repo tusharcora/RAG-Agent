@@ -40,6 +40,8 @@ function ConnectionsPageContent() {
   const [dlq, setDlq] = useState<DlqEvent[]>([]);
   const searchParams = useSearchParams();
   const justConnected = searchParams.get("connected");
+  // A provider's OAuth callback that was denied or failed sends ?error=<message> back here.
+  const connectError = searchParams.get("error");
   const router = useRouter();
   const { user } = useAuth();
   const isAdmin = user?.role === "owner" || user?.role === "admin";
@@ -84,6 +86,15 @@ function ConnectionsPageContent() {
     router.replace("/connections");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [justConnected]);
+
+  const announcedError = useRef<string | null>(null);
+  useEffect(() => {
+    if (!connectError || announcedError.current === connectError) return;
+    announcedError.current = connectError;
+    toast.error(connectError.slice(0, 200));
+    router.replace("/connections");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectError]);
 
   // Billing and failure info only matter to admins, and fetch once on mount.
   useEffect(() => {
