@@ -8,6 +8,13 @@ const API_PROXY_TARGET = process.env.API_PROXY_TARGET || "http://localhost:8000"
 
 const nextConfig = {
   reactStrictMode: true,
+  experimental: {
+    // The proxy drops a response that goes quiet for this long (default 30s).
+    // Chat answers stream over it, and a large local model can take longer
+    // than that to load and produce its first token. The API also sends an
+    // SSE keep-alive every 10s; this is the backstop.
+    proxyTimeout: 10 * 60 * 1000,
+  },
   async rewrites() {
     return [{ source: "/api/:path*", destination: `${API_PROXY_TARGET}/:path*` }];
   },

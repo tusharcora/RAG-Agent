@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import time
@@ -43,6 +44,32 @@ class QueryRequest(BaseModel):
 
 def _sse(event: str, data: dict) -> bytes:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n".encode()
+
+
+HEARTBEAT_SECONDS = 10
+
+
+async def _with_heartbeat(agen):
+    """Yields the generator's items, plus None whenever HEARTBEAT_SECONDS pass
+    with nothing new. The pending __anext__ is awaited again, never cancelled,
+    so the underlying stream isn't torn down by the timeout."""
+    pending = asyncio.ensure_future(agen.__anext__())
+    try:
+        while True:
+            done, _ = await asyncio.wait({pending}, timeout=HEARTBEAT_SECONDS)
+            if not done:
+                yield None
+                continue
+            try:
+                item = pending.result()
+            except StopAsyncIteration:
+                return
+            yield item
+            pending = asyncio.ensure_future(agen.__anext__())
+    finally:
+        if not pending.done():
+            pending.cancel()
+        await agen.aclose()
 
 
 @router.post("")
@@ -126,7 +153,14 @@ async def query(
         full_answer = ""
         truncated = False
         try:
-            async for kind, value in stream_answer(llm, SYSTEM_PROMPT, history, user_turn):
+            async for item in _with_heartbeat(stream_answer(llm, SYSTEM_PROMPT, history, user_turn)):
+                if item is None:
+                    # SSE comment; clients ignore it, but it keeps proxies from
+                    # closing the stream while a slow model (e.g. a large local
+                    # model still loading) hasn't produced its first token.
+                    yield b": keep-alive\n\n"
+                    continue
+                kind, value = item
                 if kind == "delta":
                     full_answer += value
                     yield _sse("delta", {"text": value})
