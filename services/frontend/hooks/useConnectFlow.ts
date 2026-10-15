@@ -54,8 +54,11 @@ export function useConnectFlow({ onDone, onSettled }: { onDone?: (purpose: Conne
       cb.current.onDone?.(purpose);
       cb.current.onSettled?.();
     } catch (err) {
-      startingRef.current = false;
-      setStarting(false);
+      // Only this call's own start guard: a newer start() may already own it (and be mid-startConnect).
+      if (abortRef.current === ctrl) {
+        startingRef.current = false;
+        setStarting(false);
+      }
       if (ctrl.signal.aborted) return;
       stateRef.current = null;
       setFlow({ phase: "error", purpose, message: connectErrorMessage(err) });
