@@ -17,6 +17,7 @@ from app.core import db, idempotency
 from app.core.config import settings
 from app.core.crypto import encrypt_token
 from app.integrations import broker, github
+from app.integrations.github import GithubStatusError
 from app.tasks import embed
 from conftest import db_run
 
@@ -50,10 +51,13 @@ class FakeGitHub:
     def __init__(self):
         self.routes: dict[str, object] = {}
         self.calls: list[httpx.Request] = []
+        self.broker_down = False
 
     async def handle(self, request: httpx.Request) -> httpx.Response:
         self.calls.append(request)
         if request.url.host == "broker.test":
+            if self.broker_down:
+                raise httpx.ConnectError("sign-in service unreachable", request=request)
             return httpx.Response(
                 200, json={"access_token": "new-access", "refresh_token": "new-refresh", "expires_in": 28800}
             )
@@ -97,7 +101,7 @@ def embeds(monkeypatch):
     return batches
 
 
-async def seed(pg_dsn, *, disconnected=False):
+async def seed(pg_dsn, *, disconnected=False, expires_in=timedelta(hours=1)):
     org_id, conn_id = uuid.uuid4(), uuid.uuid4()
 
     def go():
@@ -111,7 +115,7 @@ async def seed(pg_dsn, *, disconnected=False):
             org_id,
             None if disconnected else encrypt_token("A"),
             None if disconnected else encrypt_token("R"),
-            None if disconnected else datetime.now(timezone.utc) + timedelta(hours=1),
+            None if disconnected else datetime.now(timezone.utc) + expires_in,
             datetime.now(timezone.utc) if disconnected else None,
         )
 
@@ -472,17 +476,43 @@ async def failures(pg_dsn, conn_id):
     return await q(pg_dsn, "SELECT * FROM github_failures WHERE connection_id = $1 ORDER BY external_id", conn_id)
 
 
+@pytest.fixture
+def no_backoff(monkeypatch):
+    """main.py's retry branch sleeps the backoff; don't wait it out in tests."""
+    from app import main
+
+    async def no_sleep(seconds):
+        return None
+
+    monkeypatch.setattr(main.asyncio, "sleep", no_sleep)
+
+
+async def dead_letter_locally(pg_dsn, routing_key, payload, dedupe_key):
+    """One local_queue job on its last attempt, run through _process (real dispatch unless patched)."""
+    from app import local_queue
+
+    (event,) = await q(
+        pg_dsn,
+        "INSERT INTO event_log (routing_key, dedupe_key, payload, status, attempts)"
+        " VALUES ($1, $2, $3::jsonb, 'processing', 4) RETURNING id, routing_key, dedupe_key, payload, attempts",
+        routing_key, dedupe_key, json.dumps(payload),
+    )
+    await local_queue._process(tuple(event))
+    (row,) = await q(pg_dsn, "SELECT status FROM event_log WHERE id = $1", event["id"])
+    return row["status"]
+
+
 @pytest.mark.asyncio
-async def test_dead_letter_records_failure(engine, pg_dsn, monkeypatch):
+async def test_dead_letter_records_failure(engine, pg_dsn, monkeypatch, no_backoff):
     from app import local_queue, main
 
     conn_id = await seed(pg_dsn)
 
-    async def boom(routing_key, payload):
-        raise RuntimeError("blob too strange")
+    async def unprocessable(routing_key, payload):
+        raise GithubStatusError(422, "/repos/octo/repo/git/blobs/s")
 
-    monkeypatch.setattr(main, "dispatch", boom)
-    monkeypatch.setattr(local_queue, "dispatch", boom)
+    monkeypatch.setattr(main, "dispatch", unprocessable)
+    monkeypatch.setattr(local_queue, "dispatch", unprocessable)
 
     # main.py (RabbitMQ) path: a message already at max_retries is dead-lettered.
     file_msg = FakeMessage("rag.github_file_updated", file_payload(conn_id, sha="s1"), retry_count=3)
@@ -490,7 +520,7 @@ async def test_dead_letter_records_failure(engine, pg_dsn, monkeypatch):
     assert file_msg.rejected
     (f,) = await failures(pg_dsn, conn_id)
     assert (f["external_id"], f["version"], f["attempts"], f["last_error"]) == (
-        f"file:{REPO_ID}:docs/guide.md", "s1", 1, "blob too strange"
+        f"file:{REPO_ID}:docs/guide.md", "s1", 1, "GitHub answered 422 for /repos/octo/repo/git/blobs/s"
     )
     # A message still retrying records nothing new.
     await main.handle_message(FakeMessage("rag.github_file_updated", file_payload(conn_id, sha="s2"), retry_count=0))
@@ -502,22 +532,60 @@ async def test_dead_letter_records_failure(engine, pg_dsn, monkeypatch):
 
     # local_queue.py (desktop) path.
     for key, number in (("rag.github_issue_updated", 7), ("rag.github_pr_updated", 9)):
-        (event,) = await q(
-            pg_dsn,
-            "INSERT INTO event_log (routing_key, dedupe_key, payload, status, attempts)"
-            " VALUES ($1, $2, $3::jsonb, 'processing', 4) RETURNING id, routing_key, dedupe_key, payload, attempts",
-            key, f"k-{number}", json.dumps(item_payload(conn_id, number, updated_at=V2)),
-        )
-        await local_queue._process(tuple(event))
-        (status,) = await q(pg_dsn, "SELECT status FROM event_log WHERE id = $1", event["id"])
-        assert status["status"] == "dead_lettered"
+        status = await dead_letter_locally(pg_dsn, key, item_payload(conn_id, number, updated_at=V2), f"k-{number}")
+        assert status == "dead_lettered"
     rows = {r["external_id"]: r for r in await failures(pg_dsn, conn_id)}
     assert rows[f"issue:{REPO_ID}:7"]["version"] == V2
     assert rows[f"pr:{REPO_ID}:9"]["version"] == V2
 
 
 @pytest.mark.asyncio
-async def test_stale_dead_lettered_job_records_failure(engine, pg_dsn):
+async def test_unprocessable_item_end_to_end_is_recorded(engine, gh, embeds, pg_dsn):
+    """Real handlers: a 422 on the item and undecodable content are the item's own failures."""
+    conn_id = await seed(pg_dsn)
+    gh.routes["/repos/octo/repo/git/blobs/s422"] = httpx.Response(422, json={"message": "Unprocessable"})
+    gh.routes["/repos/octo/repo/git/blobs/sbad"] = httpx.Response(
+        200, json={"encoding": "base64", "content": "@@@not base64"}
+    )
+    for sha, path in (("s422", "a.md"), ("sbad", "b.md")):
+        payload = file_payload(conn_id, sha=sha, path=path)
+        assert await dead_letter_locally(pg_dsn, "rag.github_file_updated", payload, sha) == "dead_lettered"
+    rows = {r["external_id"]: r["version"] for r in await failures(pg_dsn, conn_id)}
+    assert rows == {f"file:{REPO_ID}:a.md": "s422", f"file:{REPO_ID}:b.md": "sbad"}
+
+
+@pytest.mark.asyncio
+async def test_broker_unreachable_during_refresh_is_not_recorded(engine, gh, embeds, pg_dsn):
+    """Desktop: the sign-in service is down while the token needs renewing → GithubUnavailable
+    carrying the broker's message. Not the item's fault, so nothing is recorded."""
+    conn_id = await seed(pg_dsn, expires_in=-timedelta(minutes=1))
+    gh.broker_down = True
+    status = await dead_letter_locally(pg_dsn, "rag.github_file_updated", file_payload(conn_id), "bk")
+    assert status == "dead_lettered"
+    (event,) = await q(pg_dsn, "SELECT error FROM event_log WHERE dedupe_key = 'bk'")
+    assert event["error"] == broker.UNREACHABLE
+    assert await failures(pg_dsn, conn_id) == []
+
+
+@pytest.mark.asyncio
+async def test_embedding_failure_is_not_recorded(engine, gh, pg_dsn, monkeypatch):
+    conn_id = await seed(pg_dsn)
+    gh.routes["/repos/octo/repo/git/blobs/sha1"] = blob("content")
+
+    async def voyage_down(texts, input_type):
+        raise httpx.HTTPStatusError(
+            "Voyage 503", request=httpx.Request("POST", "https://voyage.test"), response=httpx.Response(503)
+        )
+
+    monkeypatch.setattr(embed, "embed_texts", voyage_down)
+    status = await dead_letter_locally(pg_dsn, "rag.github_file_updated", file_payload(conn_id), "voy")
+    assert status == "dead_lettered"
+    assert await failures(pg_dsn, conn_id) == []
+
+
+@pytest.mark.asyncio
+async def test_stale_dead_lettered_job_is_not_recorded(engine, pg_dsn):
+    """A job the worker died during has no exception to classify: not recorded."""
     from app import local_queue
 
     conn_id = await seed(pg_dsn)
@@ -529,8 +597,9 @@ async def test_stale_dead_lettered_job_records_failure(engine, pg_dsn):
     )
     async with db.get_session() as session:
         await local_queue.requeue_stale(session)
-    (f,) = await failures(pg_dsn, conn_id)
-    assert (f["version"], f["last_error"]) == ("crashy", local_queue.STALE_ERROR)
+    (row,) = await q(pg_dsn, "SELECT status FROM event_log WHERE dedupe_key = 'stale-k'")
+    assert row["status"] == "dead_lettered"
+    assert await failures(pg_dsn, conn_id) == []
 
 
 @pytest.mark.asyncio
@@ -538,49 +607,68 @@ async def test_dead_letter_hook_failure_is_swallowed(engine, pg_dsn, monkeypatch
     from app import local_queue, main
     from app.tasks import on_dead_letter
 
-    async def boom(routing_key, payload):
-        raise RuntimeError("nope")
+    exc = GithubStatusError(422, "/x")
 
-    monkeypatch.setattr(main, "dispatch", boom)
-    monkeypatch.setattr(local_queue, "dispatch", boom)
+    async def unprocessable(routing_key, payload):
+        raise exc
+
+    monkeypatch.setattr(main, "dispatch", unprocessable)
+    monkeypatch.setattr(local_queue, "dispatch", unprocessable)
     ghost = uuid.uuid4()  # no such connection: the github_failures insert violates its foreign key
 
-    await on_dead_letter("rag.github_file_updated", file_payload(ghost), "x")  # does not raise
-    await on_dead_letter("rag.github_file_updated", {"garbage": True}, "x")
-    await on_dead_letter("rag.notion_page_updated", {"page_id": "p"}, "x")  # no hook registered
+    await on_dead_letter("rag.github_file_updated", file_payload(ghost), str(exc), exc)  # does not raise
+    await on_dead_letter("rag.github_file_updated", {"garbage": True}, str(exc), exc)
+    await on_dead_letter("rag.notion_page_updated", {"page_id": "p"}, str(exc), exc)  # no hook registered
 
     msg = FakeMessage("rag.github_file_updated", file_payload(ghost), retry_count=3)
     await main.handle_message(msg)
     assert msg.rejected
-
-    (event,) = await q(
-        pg_dsn,
-        "INSERT INTO event_log (routing_key, dedupe_key, payload, status, attempts)"
-        " VALUES ('rag.github_file_updated', 'ghost', $1::jsonb, 'processing', 4)"
-        " RETURNING id, routing_key, dedupe_key, payload, attempts",
-        json.dumps(file_payload(ghost)),
+    assert await dead_letter_locally(pg_dsn, "rag.github_file_updated", file_payload(ghost), "ghost") == (
+        "dead_lettered"
     )
-    await local_queue._process(tuple(event))
-    (status,) = await q(pg_dsn, "SELECT status FROM event_log WHERE id = $1", event["id"])
-    assert status["status"] == "dead_lettered"
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "error",
+    "exc",
     [
-        "GitHub needs reconnecting. Use Reconnect on the Connections page.",
-        "GitHub is disconnected. Connect it again to sync.",
-        "Couldn't reach GitHub to renew access. Try again in a moment.",
-        github.API_UNAVAILABLE,
-        github.TOKEN_REFUSED,
+        github.GithubNeedsReconnect(),
+        github.GithubDisconnected(),
+        github.GithubUnavailable(),
+        github.GithubUnavailable(broker.UNREACHABLE),
+        github.GithubUnavailable(github.API_UNAVAILABLE),
+        GithubStatusError(401, "/x"),
+        GithubStatusError(403, "/x"),
+        GithubStatusError(429, "/x"),
+        GithubStatusError(502, "/x"),
+        httpx.ConnectError("down"),
+        RuntimeError("voyage down"),
+        None,
     ],
+    ids=repr,
 )
-async def test_connection_level_failures_are_not_recorded(engine, pg_dsn, error):
+async def test_non_item_failures_are_not_recorded(engine, pg_dsn, exc):
     """Not the item's fault: recording them would skip the item until it changes on GitHub, even
-    after Reconnect fixes the connection."""
+    after the cause (connection, GitHub, Voyage, the database) is fixed."""
     from app.tasks import on_dead_letter
 
     conn_id = await seed(pg_dsn)
-    await on_dead_letter("rag.github_file_updated", file_payload(conn_id), error)
+    await on_dead_letter("rag.github_file_updated", file_payload(conn_id), str(exc), exc)
     assert await failures(pg_dsn, conn_id) == []
+
+
+@pytest.mark.asyncio
+async def test_same_repo_redirect_loop_raises_and_keeps_document(engine, gh, embeds, pg_dsn):
+    from app.tasks.github import handle_github_issue_updated
+
+    conn_id = await seed(pg_dsn)
+    gh.routes["/repos/octo/repo/issues/7"] = httpx.Response(200, json=issue_json(7))
+    gh.routes["/repos/octo/repo/issues/7/comments"] = httpx.Response(200, json=[])
+    await handle_github_issue_updated(item_payload(conn_id, 7))
+
+    loop = httpx.Response(301, headers={"Location": f"{API}/repositories/{REPO_ID}/issues/7"})
+    gh.routes["/repos/octo/repo/issues/7"] = loop
+    gh.routes[f"/repositories/{REPO_ID}/issues/7"] = loop
+    with pytest.raises(GithubStatusError):
+        await handle_github_issue_updated(item_payload(conn_id, 7, updated_at=V2))
+    assert (await doc(pg_dsn, conn_id, f"issue:{REPO_ID}:7"))["external_version"] == V1

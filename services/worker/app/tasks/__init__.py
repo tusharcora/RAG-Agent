@@ -18,9 +18,10 @@ HANDLERS: dict[str, Any] = {
     **github_tasks.HANDLERS,
 }
 
-# Called with (payload, error) once an event is dead-lettered (main.py's RabbitMQ consumer and
-# local_queue.py's desktop queue, including a job the worker died during past max_retries).
-ON_DEAD_LETTER: dict[str, Callable[[dict, str], Awaitable[None]]] = {
+# Called with (payload, error, exc) once an event is dead-lettered (main.py's RabbitMQ consumer and
+# local_queue.py's desktop queue). `exc` is the handler's exception, or None when there is none (a
+# job the worker died during, dead-lettered by requeue_stale past max_retries).
+ON_DEAD_LETTER: dict[str, Callable[[dict, str, BaseException | None], Awaitable[None]]] = {
     **github_tasks.ON_DEAD_LETTER,
 }
 
@@ -33,13 +34,13 @@ async def dispatch(routing_key: str, payload: dict[str, Any]) -> None:
     await handler(payload)
 
 
-async def on_dead_letter(routing_key: str, payload: Any, error: str) -> None:
+async def on_dead_letter(routing_key: str, payload: Any, error: str, exc: BaseException | None = None) -> None:
     """Runs the routing key's dead-letter hook, if any. Never raises: a failing hook is logged and
     the event stays dead-lettered exactly as it would without one."""
     hook = ON_DEAD_LETTER.get(routing_key)
     if hook is None or not isinstance(payload, dict):
         return
     try:
-        await hook(payload, error)
+        await hook(payload, error, exc)
     except Exception:
         logger.exception("Dead-letter hook for routing_key=%s failed (event stays dead-lettered)", routing_key)

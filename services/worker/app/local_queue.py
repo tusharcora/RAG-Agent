@@ -84,7 +84,7 @@ async def requeue_stale(session) -> int:
     if dead:
         logger.error("Dead-lettered %s job(s) the worker stopped during, past max_retries", len(dead))
     for row in dead:
-        await on_dead_letter(row.routing_key, _payload(row.payload), STALE_ERROR)  # never raises
+        await on_dead_letter(row.routing_key, _payload(row.payload), STALE_ERROR, None)  # never raises
     return len(requeued)
 
 
@@ -138,7 +138,7 @@ async def _process(row) -> None:
             if retry_count >= settings.max_retries:
                 logger.error("Dead-lettered after %s retries: %s", retry_count, dedupe_key)
                 await _finish(event_id, "dead_lettered", str(exc))
-                await on_dead_letter(routing_key, payload, str(exc))  # never raises
+                await on_dead_letter(routing_key, payload, str(exc), exc)  # never raises
             else:
                 backoff = min(2**retry_count, 30)
                 logger.warning("Retrying in %ss (attempt %s/%s): %s", backoff, retry_count + 1, settings.max_retries, dedupe_key)

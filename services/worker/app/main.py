@@ -97,7 +97,7 @@ async def handle_message(message: AbstractIncomingMessage) -> None:
                 logger.error("Moved to DLQ after %s retries: %s", retry_count, dedupe_key)
                 if event_log_id:
                     await mark_dead_lettered(event_log_id, str(exc))
-                await on_dead_letter(routing_key, payload, str(exc))  # never raises
+                await on_dead_letter(routing_key, payload, str(exc), exc)  # never raises
             else:
                 next_retry_count = retry_count + 1
                 backoff_seconds = min(2**retry_count, 30)

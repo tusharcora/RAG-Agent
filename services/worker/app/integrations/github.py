@@ -210,6 +210,7 @@ RETRY_ATTEMPTS = 5
 MAX_WAIT_SECONDS = 60.0
 MAX_PAGES = 20
 REDIRECTS = (301, 302, 307, 308)
+MAX_REDIRECTS = 2
 
 
 class GithubStatusError(Exception):
@@ -218,6 +219,10 @@ class GithubStatusError(Exception):
     def __init__(self, status_code: int, path: str):
         super().__init__(f"GitHub answered {status_code} for {path}")
         self.status_code = status_code
+
+
+class GithubContentError(Exception):
+    """The item's own content couldn't be decoded or parsed (bad base64, unexpected JSON shape)."""
 
 
 class _Retry(Exception):
@@ -318,7 +323,7 @@ class GithubClient:
     async def get(self, path_or_url: str, params: dict | None = None) -> httpx.Response:
         """The response for any status except 401/retryable ones; callers check the status."""
         url = path_or_url if path_or_url.startswith("http") else f"{settings.github_api_url.rstrip('/')}{path_or_url}"
-        for _ in range(3):  # at most a couple of same-repository redirects
+        for _ in range(MAX_REDIRECTS + 1):
             resp = await self._send(url, params)
             if resp.status_code == 401:
                 self.token = await github_access_token(self.connection_id, failed_token=self.token)
@@ -329,13 +334,8 @@ class GithubClient:
             if follow is None:
                 return resp
             url, params = follow, None  # the Location carries any query
-        return resp
-
-    async def json(self, path: str) -> dict:
-        resp = await self.get(path)
-        if resp.status_code != 200:
-            raise GithubStatusError(resp.status_code, httpx.URL(resp.request.url).path)
-        return resp.json()
+        # Still redirecting inside the same repository: not "gone", just not answerable.
+        raise GithubStatusError(resp.status_code, httpx.URL(resp.request.url).path)
 
     async def pages(self, path: str, max_pages: int = MAX_PAGES) -> AsyncIterator[list]:
         """Each page of a listing (per_page=100, following Link rel="next"), at most `max_pages`.

@@ -38,16 +38,25 @@ logger = logging.getLogger(__name__)
 
 GONE_STATUSES = (404, 410)
 
-# Dead-letter errors that are about the connection, not the item. Recording them would keep the
-# item skipped until it changes on GitHub, even after Reconnect (or GitHub recovering) fixed it.
-CONNECTION_ERRORS = frozenset(
-    {github.RECONNECT, github.DISCONNECTED, github.UNAVAILABLE, github.API_UNAVAILABLE, github.TOKEN_REFUSED}
-)
+# github_failures records only failures that belong to the item itself (see _item_specific): a
+# connection, network, embedding or database failure would otherwise keep the item skipped until it
+# changes on GitHub, even once Reconnect (or the service recovering) fixed the cause.
+NOT_ITEM_STATUSES = (401, 403, 429)
 MAX_ERROR_LENGTH = 2000
 
 
 class _Gone(Exception):
     pass
+
+
+def _item_specific(exc: BaseException | None) -> bool:
+    """A GitHub answer about this item that retrying won't change (a 422, a redirect loop inside the
+    repository; not auth, rate limits or 5xx), or content that couldn't be decoded/parsed."""
+    if isinstance(exc, github.GithubContentError):
+        return True
+    if isinstance(exc, github.GithubStatusError):
+        return exc.status_code < 500 and exc.status_code not in NOT_ITEM_STATUSES
+    return False
 
 
 def _external_id(kind: str, payload: dict) -> str:
@@ -67,7 +76,13 @@ async def _item(client: github.GithubClient, path: str) -> dict:
         raise _Gone()
     if resp.status_code != 200:
         raise github.GithubStatusError(resp.status_code, path)
-    return resp.json()
+    try:
+        item = resp.json()
+    except ValueError as exc:
+        raise github.GithubContentError(f"GitHub sent unreadable JSON for {path}") from exc
+    if not isinstance(item, dict):
+        raise github.GithubContentError(f"GitHub sent an unexpected answer for {path}")
+    return item
 
 
 def _login(entry: dict) -> str:
@@ -130,6 +145,9 @@ async def _store(kind: str, payload: dict, fetch: Callable[[github.GithubClient]
                 title, text, last_edited_at = await fetch(client)
             except _Gone:
                 gone = True
+            except (KeyError, TypeError, AttributeError, ValueError) as exc:
+                # Decoding/assembling the item's content (bad base64, unexpected JSON shape).
+                raise github.GithubContentError(f"Couldn't read {external_id} from GitHub: {exc!r}") from exc
     except github.GithubDisconnected:
         logger.info("connection_id=%s is disconnected, skipping %s", connection_id, external_id)
         return
@@ -213,11 +231,11 @@ async def handle_github_pr_updated(payload: dict) -> None:
     await _issue_like("pr", payload)
 
 
-async def record_github_failure(payload: dict, error: str, *, kind: str) -> None:
-    """Dead-letter hook: upsert github_failures (version = payload sha/updated_at, attempts += 1).
-    Errors about the connection rather than the item aren't recorded (see CONNECTION_ERRORS)."""
-    if error in CONNECTION_ERRORS:
-        logger.info("Not recording a GitHub failure caused by the connection, not the item")
+async def record_github_failure(payload: dict, error: str, exc: BaseException | None, *, kind: str) -> None:
+    """Dead-letter hook: upsert github_failures (version = payload sha/updated_at, attempts += 1),
+    only for item-specific failures (_item_specific); anything else is left for the next sync."""
+    if not _item_specific(exc):
+        logger.info("Not recording a dead-lettered GitHub item: the failure wasn't specific to the item")
         return
     connection_id = uuid.UUID(payload["connection_id"])
     external_id, version = _external_id(kind, payload), _version(kind, payload)
