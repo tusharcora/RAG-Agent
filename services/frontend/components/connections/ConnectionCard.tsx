@@ -15,6 +15,8 @@ import { SourceIcon } from "@/components/icons/SourceIcon";
 import { SearchLg } from "@untitledui/icons";
 import { IS_DESKTOP, useAuth } from "@/lib/auth-context";
 import { toast } from "@/lib/toast";
+import { useConnectFlow } from "@/hooks/useConnectFlow";
+import type { ConnectPurpose } from "@/lib/connect";
 import type { ConnectionPreview, ConnectionStatus, OrgMember } from "@/lib/types";
 import { Badge } from "@/components/base/badges/badges";
 import { Button } from "@/components/base/buttons/button";
@@ -28,6 +30,8 @@ export function ConnectionCard({
   isPolling,
   docCount,
   runs,
+  lastError,
+  onChanged,
 }: {
   status: ConnectionStatus;
   onSynced: () => void;
@@ -38,12 +42,26 @@ export function ConnectionCard({
   // after a manual sync — shown as a pulse badge so the wait has a visible
   // "still working" signal without needing a dedicated push channel.
   isPolling?: boolean;
+  // Error text of this provider's most recent failed sync event, when known.
+  lastError?: string;
+  // Called when a browser Connect flow ends (done, error or cancel), so the page can refetch.
+  onChanged?: () => void;
 }) {
   const [syncing, setSyncing] = useState(false);
   const [editingSecret, setEditingSecret] = useState(false);
   const [preview, setPreview] = useState<ConnectionPreview | null>(null);
-  const { user } = useAuth();
+  const { user, account } = useAuth();
   const isAdmin = user?.role === "owner" || user?.role === "admin";
+  const oneClick = IS_DESKTOP && !!account?.broker_configured && (status.provider === "notion" || status.provider === "jira");
+  const [showSecretForm, setShowSecretForm] = useState(false);
+  const { flow, start, cancel, reopen } = useConnectFlow({
+    onDone: () => onSynced(), // shows the "Syncing…" badge while the first sync runs
+    onSettled: () => onChanged?.(),
+  });
+  const waiting = flow.phase === "waiting";
+  // With one-click Connect the pasted-secret form is opt-in; without it, it is the only way in.
+  const showNotionForm =
+    IS_DESKTOP && status.provider === "notion" && !waiting && (editingSecret || (!status.connected && (!oneClick || showSecretForm)));
 
   // Flashes the "Last synced" row when its value actually changes between
   // polls, so a completed sync is visible even without watching the badge.
@@ -94,14 +112,20 @@ export function ConnectionCard({
   };
 
   const healthy = status.last_sync_status !== "failed" && status.last_sync_status !== "dead_lettered";
-  const statusLabel = !status.connected
+  // Task 3 marks a dead Jira refresh token with "Jira needs reconnecting…". If the error text isn't
+  // known to the card, any failed/dead-lettered Jira sync offers Reconnect.
+  const needsReconnect =
+    status.provider === "jira" && status.connected && !healthy && (lastError === undefined || lastError.includes("Jira needs reconnecting"));
+  const statusLabel = waiting
+    ? "WAITING FOR YOU"
+    : !status.connected
     ? "NOT CONNECTED"
     : !healthy
       ? "LAST SYNC FAILED"
       : status.dead_lettered_count_24h > 0
         ? `${status.dead_lettered_count_24h} FAILED ITEM${status.dead_lettered_count_24h === 1 ? "" : "S"}`
         : "HEALTHY";
-  const statusTone = !status.connected ? "text-ink-500" : healthy && status.dead_lettered_count_24h === 0 ? "text-success-primary" : "text-error-primary";
+  const statusTone = waiting ? "text-warning-primary" : !status.connected ? "text-ink-500" : healthy && status.dead_lettered_count_24h === 0 ? "text-success-primary" : "text-error-primary";
 
   return (
     <section className="flex min-w-0 flex-col gap-[22px] rounded-[20px] border border-ink-800 bg-ink-900 p-6">
@@ -156,9 +180,33 @@ export function ConnectionCard({
           </div>
         </>
       ) : (
-        <p className="text-sm text-ink-400">Connect to start syncing content for retrieval.</p>
+        <p className="text-sm text-ink-400">
+          {oneClick
+            ? status.provider === "notion"
+              ? "Sign in to Notion and pick the pages you want to search. Only the pages you choose are synced."
+              : "Sign in to Atlassian and choose your Jira site. Issues you can see are synced."
+            : "Connect to start syncing content for retrieval."}
+        </p>
       )}
 
+      {waiting ? (
+        <div className="flex flex-col gap-3" role="status">
+          <div>
+            <p className="text-[15px] font-medium text-ink-100">Finish signing in in your browser…</p>
+            <p className="mt-1 text-[13px] text-ink-400">
+              Approve access{status.provider === "notion" ? " and pick your pages" : ""} on {LABELS[status.provider]}&apos;s page. This updates by itself when you&apos;re done.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button color="secondary" size="sm" onPress={cancel}>
+              Cancel
+            </Button>
+            <Button color="tertiary" size="sm" onPress={reopen}>
+              Reopen the sign-in page
+            </Button>
+          </div>
+        </div>
+      ) : (
       <div className="flex flex-wrap items-center gap-2">
         {status.connected ? (
           <>
@@ -171,6 +219,16 @@ export function ConnectionCard({
             <Button color="secondary" size="sm" isLoading={syncing} onPress={handleSync}>
               Sync now
             </Button>
+            {needsReconnect && oneClick && isAdmin && (
+              <Button color="primary" size="sm" onPress={() => start("jira")}>
+                Reconnect Jira
+              </Button>
+            )}
+            {status.provider === "notion" && oneClick && isAdmin && (
+              <Button color="tertiary" size="sm" onPress={() => start("notion")}>
+                Choose pages in Notion
+              </Button>
+            )}
             {status.provider === "notion" && isAdmin && IS_DESKTOP && (
               <Button color="tertiary" size="sm" onPress={() => setEditingSecret((v) => !v)}>
                 {editingSecret ? "Cancel" : "Replace secret"}
@@ -193,6 +251,17 @@ export function ConnectionCard({
               </Badge>
             )}
           </>
+        ) : oneClick ? (
+          <>
+            <Button color="primary" size="sm" onPress={() => start(status.provider as ConnectPurpose)}>
+              Connect {LABELS[status.provider]}
+            </Button>
+            {status.provider === "notion" && (
+              <Button color="link-color" size="sm" onPress={() => setShowSecretForm((v) => !v)}>
+                or paste an integration secret
+              </Button>
+            )}
+          </>
         ) : IS_DESKTOP && status.provider === "notion" ? null : IS_DESKTOP ? (
           <p className="text-xs text-ink-500">Jira isn&apos;t available in the desktop app yet.</p>
         ) : (
@@ -201,8 +270,18 @@ export function ConnectionCard({
           </Button>
         )}
       </div>
+      )}
 
-      {IS_DESKTOP && status.provider === "notion" && (!status.connected || editingSecret) && (
+      {flow.phase === "error" && <p className="text-xs text-error-primary">{flow.message}</p>}
+      {flow.phase === "error" && (
+        <div>
+          <Button color="secondary" size="sm" onPress={() => start(status.provider as ConnectPurpose)}>
+            Try again
+          </Button>
+        </div>
+      )}
+
+      {showNotionForm && (
         <NotionSecretForm
           onConnected={() => {
             setEditingSecret(false);

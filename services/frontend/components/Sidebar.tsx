@@ -34,7 +34,8 @@ const LINKS = [
 
 export default function Sidebar() {
   const pathname = usePathname();
-  const { user, logout } = useAuth();
+  const { user, logout, account } = useAuth();
+  const signedName = IS_DESKTOP && account?.signed_in ? account.name || account.email : null;
 
   // First-run setup is full-screen.
   if (pathname.startsWith("/setup")) return null;
@@ -81,11 +82,11 @@ export default function Sidebar() {
 
           <div className="hidden items-center gap-2.5 rounded-xl border border-ink-800 bg-ink-900 px-3 py-2.5 md:flex">
             <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-ink-100 text-xs font-semibold text-ink-950">
-              {(user.org_name || user.email).slice(0, 2).toUpperCase()}
+              {signedName ? signedName.slice(0, 1).toUpperCase() : (user.org_name || user.email).slice(0, 2).toUpperCase()}
             </span>
             <div className="min-w-0 flex-1 leading-tight">
-              <p className="truncate text-[13px] font-medium text-ink-100">{user.org_name}</p>
-              <p className="truncate text-xs capitalize text-ink-500">{user.role}</p>
+              <p className="truncate text-[13px] font-medium text-ink-100">{signedName ?? user.org_name}</p>
+              <p className="truncate text-xs text-ink-500 first-letter:uppercase">{signedName ? user.org_name : user.role}</p>
             </div>
             {!IS_DESKTOP && (
               <button

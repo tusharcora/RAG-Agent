@@ -1,11 +1,12 @@
 "use client";
 
-import { useAuth } from "@/lib/auth-context";
+import { IS_DESKTOP, useAuth } from "@/lib/auth-context";
 import { ACCENTS, useTheme, type ThemeMode } from "@/lib/theme-context";
 import { ModelSettings } from "@/components/settings/ModelSettings";
 import { McpSettings } from "@/components/settings/McpSettings";
 import { MembersSection } from "@/components/settings/MembersSection";
 import { InviteSection } from "@/components/settings/InviteSection";
+import { AccountSection } from "@/components/settings/AccountSection";
 import { ServiceTokensSection } from "@/components/settings/ServiceTokensSection";
 
 const MODES: { id: ThemeMode; label: string; thumb: string; bars: [string, string, string] }[] = [
@@ -29,7 +30,7 @@ function InfoRow({ label, value }: { label: string; value: string }) {
 }
 
 export default function SettingsPage() {
-  const { user } = useAuth();
+  const { user, account } = useAuth();
   const { mode, setMode, accent, setAccent } = useTheme();
 
   if (!user) return null;
@@ -159,6 +160,9 @@ export default function SettingsPage() {
         </>
       )}
 
+      {IS_DESKTOP && <AccountSection />}
+
+      {!(IS_DESKTOP && account?.broker_configured) && (
       <section aria-labelledby="account" className="rounded-2xl border border-ink-800 bg-ink-900 p-5">
         <h2 id="account" className="mb-2 text-sm font-semibold text-ink-100">
           Account
@@ -168,6 +172,7 @@ export default function SettingsPage() {
         <InfoRow label="Role" value={user.role} />
         <InfoRow label="Organization" value={user.org_name} />
       </section>
+      )}
     </div>
   );
 }

@@ -4,6 +4,7 @@ import { createContext, useContext, useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { me as fetchMe, logout as apiLogout, localSession } from "./api";
 import { getSetupStatus } from "./setup";
+import { getAccount, type Account } from "./connect";
 import type { MeResponse } from "./types";
 
 interface AuthState {
@@ -11,6 +12,9 @@ interface AuthState {
   loading: boolean;
   /** Desktop only: whether first-run setup is finished. null = unknown / not desktop. */
   setupComplete: boolean | null;
+  /** Desktop only: optional Google/GitHub sign-in state. null = unknown / not desktop. */
+  account: Account | null;
+  refreshAccount: () => Promise<void>;
   refresh: () => Promise<void>;
   logout: () => Promise<void>;
 }
@@ -36,8 +40,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<MeResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [setupComplete, setSetupComplete] = useState<boolean | null>(null);
+  const [account, setAccount] = useState<Account | null>(null);
   const pathname = usePathname();
   const router = useRouter();
+
+  async function refreshAccount() {
+    if (!IS_DESKTOP) return;
+    try {
+      setAccount(await getAccount());
+    } catch {
+      setAccount(null);
+    }
+  }
 
   async function refresh() {
     try {
@@ -49,6 +63,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         } catch {
           setSetupComplete(null); // unknown: don't trap the user on /setup
         }
+        await refreshAccount();
       }
     } catch {
       setUser(null);
@@ -83,7 +98,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     router.replace("/login");
   }
 
-  return <AuthContext.Provider value={{ user, loading, setupComplete, refresh, logout }}>{children}</AuthContext.Provider>;
+  return <AuthContext.Provider value={{ user, loading, setupComplete, account, refreshAccount, refresh, logout }}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth(): AuthState {

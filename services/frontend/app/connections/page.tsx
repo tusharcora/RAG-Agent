@@ -98,8 +98,15 @@ function ConnectionsPageContent() {
   useInterval(refresh, pollFast ? 3000 : null);
 
   const handleSynced = () => {
+    refresh();
     setPollFast(true);
     setTimeout(() => setPollFast(false), 30000);
+  };
+
+  // Newest sync event's error for this provider, when it failed (events arrive newest first).
+  const lastErrorFor = (provider: string) => {
+    const latest = events.find((e) => e.routing_key === ROUTING_KEYS[provider]);
+    return latest && (latest.status === "failed" || latest.status === "dead_lettered") && latest.error ? latest.error : undefined;
   };
 
   const runsFor = (provider: string) =>
@@ -132,6 +139,8 @@ function ConnectionsPageContent() {
               isPolling={pollFast}
               docCount={docTotals[c.provider]}
               runs={runsFor(c.provider)}
+              lastError={lastErrorFor(c.provider)}
+              onChanged={refresh}
             />
           ))
         )}
