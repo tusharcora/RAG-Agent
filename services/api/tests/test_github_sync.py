@@ -71,6 +71,8 @@ class FakeGitHub:
         self.installations: dict[int, list[dict]] = {}
         self.trees: dict[str, dict | int] = {}
         self.issues: dict[str, list[dict]] = {}
+        # Items GET /repos/{full_name}/issues/{n} still finds although the listing skipped them.
+        self.hidden: dict[tuple[str, int], dict] = {}
         self.fail: dict[tuple[str, int], int] = {}  # (path, page) -> status, every time
         self.requests: list[httpx.Request] = []
         self.per_page = 2
@@ -107,6 +109,13 @@ class FakeGitHub:
             if isinstance(tree, int):
                 return httpx.Response(tree, json={"message": "Git Repository is empty."})
             return httpx.Response(200, json=tree)
+        if parts[0] == "repos" and len(parts) == 5 and parts[3] == "issues":
+            full_name, number = f"{parts[1]}/{parts[2]}", int(parts[4])
+            found = [i for i in self.issues.get(full_name, []) if i["number"] == number]
+            raw = found[0] if found else self.hidden.get((full_name, number))
+            if raw is None:
+                return httpx.Response(404, json={"message": "Not Found"})
+            return httpx.Response(200, json=raw)
         if parts[0] == "repos" and parts[3:] == ["issues"]:
             since = request.url.params.get("since")
             items = sorted(self.issues.get(f"{parts[1]}/{parts[2]}", []), key=lambda i: i["updated_at"])
@@ -401,13 +410,14 @@ def test_unchanged_tree_sha_skips_listing(gh, published, factory, pg_dsn):
     assert sync(factory, conn_id)["published"] == 0
 
 
-def test_budget_converges_large_repo(gh, published, factory, pg_dsn):
+def test_budget_converges_large_repo(gh, published, factory, pg_dsn, monkeypatch):
+    monkeypatch.setattr(settings, "max_github_items_per_sync", 50)
     _, conn_id = seed_conn(pg_dsn)
     gh.installations = {1: [repo(11, "big")]}
     gh.trees["octo/big"] = {
         "sha": "T1",
         "truncated": False,
-        "tree": [blob(f"docs/{i:04}.md", f"s{i}") for i in range(1200)],
+        "tree": [blob(f"docs/{i:04}.md", f"s{i}") for i in range(120)],
     }
     counts = []
     for _ in range(4):
@@ -417,8 +427,8 @@ def test_budget_converges_large_repo(gh, published, factory, pg_dsn):
         counts.append((result["published"], result["truncated"]))
         assert len(batch) == result["published"]
         fake_worker(pg_dsn, conn_id, batch)
-    assert counts == [(500, True), (500, True), (200, False), (0, False)]
-    assert len({external_id(e)[0] for e in published}) == 1200
+    assert counts == [(50, True), (50, True), (20, False), (0, False)]
+    assert len({external_id(e)[0] for e in published}) == 120
     assert repos(pg_dsn, conn_id)[11]["tree_sha"] == "T1"
 
 
@@ -538,6 +548,88 @@ def test_incomplete_full_scan_prunes_nothing(gh, published, factory, pg_dsn, mon
     result = sync(factory, conn_id)
     assert result["removed"] == 1 and result["truncated"] is False
     assert repos(pg_dsn, conn_id)[11]["last_full_scan_at"] is not None
+
+
+def test_full_scan_confirms_missing_items_before_deleting(gh, published, factory, pg_dsn):
+    # Page-numbered listings can skip an item that moved while the scan paged: each document the
+    # listing didn't return is checked on its own before it is deleted.
+    _, conn_id = seed_conn(pg_dsn)
+    now = datetime.now(timezone.utc)
+    seed_repo(pg_dsn, conn_id, repo(11, "a"), tree_sha="empty-tree")
+    gh.installations = {1: [repo(11, "a")]}
+    v = iso(now - timedelta(days=10))
+    same_repo = "https://gh.test/repos/octo/a"
+    gh.hidden[("octo/a", 3)] = {**issue(3, v), "repository_url": same_repo}  # skipped, unchanged: kept
+    gh.hidden[("octo/a", 6)] = {**issue(6, iso(now - timedelta(days=1)), pr=True), "repository_url": same_repo}
+    gh.hidden[("octo/a", 8)] = {**issue(8, v), "repository_url": "https://gh.test/repos/octo/elsewhere"}  # moved
+    gh.fail[("/repos/octo/a/issues/9", 1)] = 403  # couldn't confirm: kept
+    for number in (3, 7, 8, 9):
+        seed_doc(pg_dsn, conn_id, f"issue:11:{number}", v)
+    seed_doc(pg_dsn, conn_id, "pr:11:6", v)  # skipped by the listing and changed since: re-enqueued
+    result = sync(factory, conn_id)
+    assert set(docs(pg_dsn, conn_id)) == {"issue:11:3", "issue:11:9", "pr:11:6"}  # 7 (404) and 8 (moved) gone
+    assert result["removed"] == 2
+    assert [(e["routing_key"], e["payload"]["number"]) for e in published] == [("rag.github_pr_updated", 6)]
+    assert repos(pg_dsn, conn_id)[11]["last_full_scan_at"] is not None
+
+
+def test_cursor_stays_before_an_item_whose_publish_failed(gh, factory, pg_dsn, monkeypatch):
+    _, conn_id = seed_conn(pg_dsn)
+    start = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    seed_repo(pg_dsn, conn_id, repo(11, "a"), tree_sha="empty-tree", cursor=start,
+              full_scan=datetime.now(timezone.utc) - timedelta(days=1))
+    gh.installations = {1: [repo(11, "a")]}
+    gh.issues["octo/a"] = [issue(1, "2026-10-02T00:00:00Z"), issue(2, "2026-10-03T00:00:00Z"),
+                           issue(3, "2026-10-04T00:00:00Z")]
+    seed_doc(pg_dsn, conn_id, "issue:11:3", "2026-10-04T00:00:00Z")  # unchanged, after the failing one
+    events = []
+    real = github_sync.publish_event
+
+    async def flaky(session, routing_key, payload, dedupe_key, org_id=None):
+        if payload["number"] == 2:
+            # Like publish_event on a broker blip: the event_log row is committed, then it raises.
+            await session.commit()
+            raise RuntimeError("broker down")
+        events.append(payload["number"])
+        return await real(session, routing_key, payload, dedupe_key, org_id)
+
+    monkeypatch.setattr(github_sync, "publish_event", flaky)
+    with pytest.raises(RuntimeError):
+        sync(factory, conn_id)
+    assert events == [1]
+    row = repos(pg_dsn, conn_id)[11]
+    assert row["issues_cursor"] == datetime(2026, 10, 2, tzinfo=timezone.utc)  # at item 1, before item 2
+    (conn,) = db_run(pg_dsn, "SELECT github_rr_offset FROM oauth_connections WHERE id = $1", conn_id)
+    assert conn["github_rr_offset"] == 1  # rotated even though the sync failed
+
+    seed_doc(pg_dsn, conn_id, "issue:11:1", "2026-10-02T00:00:00Z")  # the worker processed item 1
+    recorded = []
+
+    async def record(session, routing_key, payload, dedupe_key, org_id=None):
+        recorded.append(payload["number"])
+        return await real(session, routing_key, payload, dedupe_key, org_id)
+
+    monkeypatch.setattr(github_sync, "publish_event", record)
+    sync(factory, conn_id)  # a normal (not full-scan) sync
+    assert recorded == [2]
+    assert repos(pg_dsn, conn_id)[11]["issues_cursor"] == datetime(2026, 10, 4, tzinfo=timezone.utc)
+
+
+def test_rr_offset_saved_when_refresh_fails_mid_sync(gh, published, factory, pg_dsn, monkeypatch):
+    _, conn_id = seed_conn(pg_dsn, token="stale")
+    gh.installations = {1: [repo(11, "a")]}
+
+    async def refused(connection_id, failed_token=None):
+        if failed_token is None:
+            return "stale"
+        raise HTTPException(status_code=409, detail=RECONNECT)
+
+    monkeypatch.setattr(github_sync, "github_access_token", refused)
+    with pytest.raises(HTTPException) as err:
+        sync(factory, conn_id)
+    assert err.value.status_code == 409
+    (conn,) = db_run(pg_dsn, "SELECT github_rr_offset FROM oauth_connections WHERE id = $1", conn_id)
+    assert conn["github_rr_offset"] == 1
 
 
 def test_failed_version_is_skipped_until_changed(gh, published, factory, pg_dsn):
