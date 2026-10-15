@@ -185,7 +185,8 @@ async def google_callback(
         session,
         provider="google",
         provider_user_id=userinfo["sub"],
-        email=userinfo.get("email"),
+        # Only a Google-verified email may match an existing account or create one.
+        email=userinfo.get("email") if userinfo.get("email_verified") is True else None,
         display_name=userinfo.get("name"),
         invite_token=state_payload.get("invite_token"),
     )
@@ -233,16 +234,16 @@ async def github_callback(
         user_resp.raise_for_status()
         gh_user = user_resp.json()
 
-        email = gh_user.get("email")
-        if not email:
-            # Private-by-default emails don't show up on /user — fall back to
-            # the verified-primary entry from /user/emails.
-            emails_resp = await client.get(GITHUB_EMAILS_URL, headers=headers)
-            if emails_resp.status_code == 200:
-                for entry in emails_resp.json():
-                    if entry.get("primary") and entry.get("verified"):
-                        email = entry["email"]
-                        break
+        # Only the verified primary email from /user/emails. The profile's
+        # public `email` on /user is user-editable and unverified, so it must
+        # never be used to match an existing account.
+        email = None
+        emails_resp = await client.get(GITHUB_EMAILS_URL, headers=headers)
+        if emails_resp.status_code == 200:
+            for entry in emails_resp.json():
+                if entry.get("primary") is True and entry.get("verified") is True:
+                    email = entry.get("email") or None
+                    break
 
     logger.info("GitHub login: id=%s", gh_user.get("id"))
     return await _login_via_identity(
