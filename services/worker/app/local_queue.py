@@ -23,7 +23,7 @@ from app.core.config import settings
 from app.core.db import get_session
 from app.core.idempotency import already_processed, clear_dedupe
 from app.core.telemetry import tracer
-from app.tasks import dispatch
+from app.tasks import dispatch, on_dead_letter
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,7 @@ STALE_ERROR = "worker stopped while processing this job"
 DEAD_LETTER_STALE_SQL = text(
     "UPDATE event_log SET status = 'dead_lettered', error = :error, updated_at = now()"
     " WHERE status = 'processing' AND attempts > :max_retries"
-    " RETURNING dedupe_key"
+    " RETURNING dedupe_key, routing_key, payload"
 )
 REQUEUE_STALE_SQL = text(
     "UPDATE event_log SET status = 'received', available_at = now(), updated_at = now()"
@@ -75,15 +75,27 @@ async def requeue_stale(session) -> int:
     duplicate."""
     dead = (
         await session.execute(DEAD_LETTER_STALE_SQL, {"error": STALE_ERROR, "max_retries": settings.max_retries})
-    ).scalars().all()
+    ).all()
     requeued = (await session.execute(REQUEUE_STALE_SQL)).scalars().all()
     await session.commit()
-    for dedupe_key in [*dead, *requeued]:
+    for dedupe_key in [*(row.dedupe_key for row in dead), *requeued]:
         if dedupe_key:
             await clear_dedupe(dedupe_key)
     if dead:
         logger.error("Dead-lettered %s job(s) the worker stopped during, past max_retries", len(dead))
+    for row in dead:
+        await on_dead_letter(row.routing_key, _payload(row.payload), STALE_ERROR)  # never raises
     return len(requeued)
+
+
+def _payload(payload):
+    """Raw-SQL JSONB comes back as text with asyncpg."""
+    if isinstance(payload, str):
+        try:
+            return json.loads(payload)
+        except ValueError:
+            return None
+    return payload
 
 
 async def _finish(event_id, status: str, error: str | None = None, retry_in: float | None = None) -> None:
@@ -126,6 +138,7 @@ async def _process(row) -> None:
             if retry_count >= settings.max_retries:
                 logger.error("Dead-lettered after %s retries: %s", retry_count, dedupe_key)
                 await _finish(event_id, "dead_lettered", str(exc))
+                await on_dead_letter(routing_key, payload, str(exc))  # never raises
             else:
                 backoff = min(2**retry_count, 30)
                 logger.warning("Retrying in %ss (attempt %s/%s): %s", backoff, retry_count + 1, settings.max_retries, dedupe_key)

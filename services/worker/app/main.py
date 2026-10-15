@@ -12,7 +12,7 @@ from app.core.telemetry import setup_telemetry, tracer
 from app.core.idempotency import already_processed, clear_dedupe
 from app.core.db import init_engine
 from app.core.event_log import mark_dead_lettered, mark_failed, mark_processing, mark_succeeded
-from app.tasks import dispatch
+from app.tasks import dispatch, on_dead_letter
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +55,7 @@ async def handle_message(message: AbstractIncomingMessage) -> None:
     # (api service). Absent for anything published by hand — every call below
     # is a no-op in that case, so this stays purely additive instrumentation.
     event_log_id = (message.headers or {}).get("event_log_id")
+    payload = None  # stays None when the body isn't valid JSON
 
     with tracer.start_as_current_span(
         "process_event",
@@ -96,6 +97,7 @@ async def handle_message(message: AbstractIncomingMessage) -> None:
                 logger.error("Moved to DLQ after %s retries: %s", retry_count, dedupe_key)
                 if event_log_id:
                     await mark_dead_lettered(event_log_id, str(exc))
+                await on_dead_letter(routing_key, payload, str(exc))  # never raises
             else:
                 next_retry_count = retry_count + 1
                 backoff_seconds = min(2**retry_count, 30)

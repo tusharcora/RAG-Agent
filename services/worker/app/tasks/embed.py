@@ -37,6 +37,7 @@ async def _sync_document(
     url: str,
     last_edited_at,
     sections: list[tuple[str, dict]],
+    external_version: str | None = None,
 ) -> None:
     """Upserts `documents`, then re-chunks + re-embeds `chunks` unless the
     combined content is byte-identical to what's already stored (defensive
@@ -45,6 +46,11 @@ async def _sync_document(
     event* twice; this one prevents re-embedding unchanged content on a
     genuinely new sync). `sections` lets a caller (e.g. Jira) chunk different
     parts of a document independently with different metadata tags.
+
+    `title`/`url` are refreshed even when the content is unchanged (a GitHub repository
+    rename changes both without touching the text). `external_version` (GitHub's blob sha /
+    `updated_at`), when given, is written in the same commit as the content, so it is
+    recorded only once the upsert succeeded.
     """
     combined_content = "\n\n".join(text for text, _ in sections if text)
     content_hash = hashlib.sha256(combined_content.encode()).hexdigest()
@@ -64,6 +70,10 @@ async def _sync_document(
         existing = await session.execute(select(Chunk.id).where(Chunk.document_id == document.id).limit(1))
         if existing.first() is not None:
             logger.info("Content unchanged for %s:%s, skipping re-embed", source, external_id)
+            document.title = title
+            document.url = url
+            if external_version is not None:
+                document.external_version = external_version
             document.synced_at = datetime.now(timezone.utc)
             await session.commit()
             return
@@ -82,6 +92,8 @@ async def _sync_document(
     document.title = title
     document.url = url
     document.content_hash = content_hash
+    if external_version is not None:
+        document.external_version = external_version
     document.last_edited_at = _parse_datetime(last_edited_at)
     document.synced_at = datetime.now(timezone.utc)
     await session.flush()

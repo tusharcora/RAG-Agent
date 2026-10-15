@@ -1,5 +1,5 @@
-"""GitHub for the worker. This part: the GitHub App user-token refresh (the client
-that fetches files/issues/PRs builds on it).
+"""GitHub for the worker: the GitHub App user-token refresh, and `GithubClient`, the REST
+client the handlers in app/tasks/github.py fetch files/issues/PRs with.
 
 The worker's copy of the api's app/integrations/github_auth.py (duplicated per this
 repo's api/worker convention), raising module exceptions instead of HTTPException.
@@ -11,12 +11,16 @@ token the first wrote. GitHub rotates the refresh token on every use.
 Never log tokens or refresh tokens from this module.
 """
 
+import asyncio
 import logging
+import time
 import uuid
+from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 
 import httpx
 from cryptography.fernet import InvalidToken
+from tenacity import AsyncRetrying, retry_if_exception_type
 from sqlalchemy import select, text, update
 from sqlalchemy.exc import DBAPIError
 
@@ -32,6 +36,8 @@ GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"
 RECONNECT = "GitHub needs reconnecting. Use Reconnect on the Connections page."
 DISCONNECTED = "GitHub is disconnected. Connect it again to sync."
 UNAVAILABLE = "Couldn't reach GitHub to renew access. Try again in a moment."
+API_UNAVAILABLE = "GitHub is rate limiting or unavailable right now. Try again in a moment."
+TOKEN_REFUSED = "GitHub refused the renewed access token. Try again in a moment."
 REFRESH_MARGIN = timedelta(minutes=5)
 # How long to wait for the connection row's lock. Longer than the slowest refresh another holder can be doing
 # (30 s HTTP timeout), so a concurrent refresher is waited for; a holder that never commits ends as "unavailable"
@@ -191,3 +197,165 @@ async def github_access_token(connection_id: uuid.UUID, failed_token: str | None
         )
         await session.commit()
         return new_access_token
+
+
+# ---------------------------------------------------------------- REST client
+
+# Tests set this to an httpx.MockTransport.
+TRANSPORT: httpx.AsyncBaseTransport | None = None
+_sleep = asyncio.sleep
+RETRY_ATTEMPTS = 5
+# A wait longer than this (an exhausted hourly quota) isn't slept through in a handler: it fails as
+# unavailable and the event's own retry/backoff takes over.
+MAX_WAIT_SECONDS = 60.0
+MAX_PAGES = 20
+REDIRECTS = (301, 302, 307, 308)
+
+
+class GithubStatusError(Exception):
+    """A non-2xx answer that isn't a rate limit, 5xx or 401 (callers decide what 404/410 mean)."""
+
+    def __init__(self, status_code: int, path: str):
+        super().__init__(f"GitHub answered {status_code} for {path}")
+        self.status_code = status_code
+
+
+class _Retry(Exception):
+    def __init__(self, wait: float):
+        self.wait = wait
+
+
+def _retry_wait(resp: httpx.Response, attempt: int) -> float | None:
+    """Seconds to wait before retrying `resp`, or None when it isn't retryable: 5xx, 429 and the
+    rate-limit 403s (secondary limits carry Retry-After; an exhausted quota x-ratelimit-remaining: 0)."""
+    status = resp.status_code
+    retry_after = resp.headers.get("Retry-After")
+    exhausted = resp.headers.get("x-ratelimit-remaining") == "0"
+    if not (status >= 500 or status == 429 or (status == 403 and (retry_after is not None or exhausted))):
+        return None
+    try:
+        if retry_after is not None:
+            return max(0.0, float(retry_after))
+        if exhausted and resp.headers.get("x-ratelimit-reset"):
+            return max(0.0, float(resp.headers["x-ratelimit-reset"]) - time.time())
+    except ValueError:
+        pass
+    return float(min(2**attempt, 30))
+
+
+def _wait(state) -> float:
+    exc = state.outcome.exception() if state.outcome else None
+    return exc.wait if isinstance(exc, _Retry) else float(min(2**state.attempt_number, 30))
+
+
+def _stop(state) -> bool:
+    exc = state.outcome.exception() if state.outcome else None
+    return state.attempt_number >= RETRY_ATTEMPTS or (isinstance(exc, _Retry) and exc.wait > MAX_WAIT_SECONDS)
+
+
+class GithubClient:
+    """GET-only REST client against `settings.github_api_url` for one connection and repository.
+
+    Retries 5xx, 429, rate-limit 403s and network errors (honouring Retry-After / x-ratelimit-reset).
+    The token comes from `github_access_token` (its own session and row lock — so a handler must
+    not hold uncommitted writes on the connection row while using this client); a 401 asks it once
+    for a renewed token (`failed_token`), then fails as unavailable. A redirect is followed only when
+    it stays inside the same repository id (a renamed repository); any other redirect (an issue
+    transferred elsewhere) is returned to the caller. Use as `async with`."""
+
+    def __init__(self, connection_id: uuid.UUID, repo_id: int):
+        self.connection_id = connection_id
+        self.repo_id = int(repo_id)
+        self.token: str | None = None
+        self._http: httpx.AsyncClient | None = None
+
+    async def __aenter__(self) -> "GithubClient":
+        # Raises GithubDisconnected / GithubNeedsReconnect / GithubUnavailable before any API call.
+        self.token = await github_access_token(self.connection_id)
+        self._http = httpx.AsyncClient(transport=TRANSPORT, timeout=30)
+        return self
+
+    async def __aexit__(self, *exc) -> None:
+        if self._http is not None:
+            await self._http.aclose()
+
+    @staticmethod
+    def _headers(token: str) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+
+    async def _send(self, url: str, params: dict | None) -> httpx.Response:
+        try:
+            async for attempt in AsyncRetrying(
+                retry=retry_if_exception_type((_Retry, httpx.TransportError)),
+                wait=_wait,
+                stop=_stop,
+                sleep=lambda seconds: _sleep(seconds),
+                reraise=True,
+            ):
+                with attempt:
+                    resp = await self._http.get(url, params=params, headers=self._headers(self.token))
+                    wait = _retry_wait(resp, attempt.retry_state.attempt_number)
+                    if wait is not None:
+                        raise _Retry(wait)
+            return resp
+        except (_Retry, httpx.TransportError) as exc:
+            logger.warning("GitHub unavailable for %s", httpx.URL(url).path)
+            raise GithubUnavailable(API_UNAVAILABLE) from exc
+
+    def _same_repo_redirect(self, resp: httpx.Response) -> str | None:
+        location = resp.headers.get("Location")
+        if resp.status_code not in REDIRECTS or not location:
+            return None
+        target = httpx.URL(resp.request.url).join(location)
+        if target.path.startswith(f"/repositories/{self.repo_id}/"):
+            return str(target)
+        return None
+
+    async def get(self, path_or_url: str, params: dict | None = None) -> httpx.Response:
+        """The response for any status except 401/retryable ones; callers check the status."""
+        url = path_or_url if path_or_url.startswith("http") else f"{settings.github_api_url.rstrip('/')}{path_or_url}"
+        for _ in range(3):  # at most a couple of same-repository redirects
+            resp = await self._send(url, params)
+            if resp.status_code == 401:
+                self.token = await github_access_token(self.connection_id, failed_token=self.token)
+                resp = await self._send(url, params)
+                if resp.status_code == 401:
+                    raise GithubUnavailable(TOKEN_REFUSED)
+            follow = self._same_repo_redirect(resp)
+            if follow is None:
+                return resp
+            url, params = follow, None  # the Location carries any query
+        return resp
+
+    async def json(self, path: str) -> dict:
+        resp = await self.get(path)
+        if resp.status_code != 200:
+            raise GithubStatusError(resp.status_code, httpx.URL(resp.request.url).path)
+        return resp.json()
+
+    async def pages(self, path: str, max_pages: int = MAX_PAGES) -> AsyncIterator[list]:
+        """Each page of a listing (per_page=100, following Link rel="next"), at most `max_pages`.
+        Raises GithubStatusError on any non-200 page."""
+        url: str | None = path
+        params: dict | None = {"per_page": 100}
+        for _ in range(max_pages):
+            if not url:
+                return
+            resp = await self.get(url, params)
+            if resp.status_code != 200:
+                raise GithubStatusError(resp.status_code, httpx.URL(resp.request.url).path)
+            yield resp.json()
+            url = resp.links.get("next", {}).get("url")
+            params = None  # the next link carries them
+        if url:
+            logger.info("Stopped listing %s after %s pages", httpx.URL(path).path, max_pages)
+
+    async def all(self, path: str) -> list:
+        items: list = []
+        async for page in self.pages(path):
+            items.extend(page)
+        return items
