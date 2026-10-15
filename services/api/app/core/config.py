@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     ollama_embed_model: str = "nomic-embed-text"
     ollama_chat_model: str = "llama3.2"  # desktop default answer model
     otel_service_name: str = "api"
+    # Folder holding desktop.json / secrets.json (set by desktop/launcher.py).
+    desktop_data_dir: str = ""
 
     cors_origins: list[str] = ["http://localhost:3001", "http://localhost:3000"]
     frontend_url: str = "http://localhost:3001"
