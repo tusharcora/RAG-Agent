@@ -24,6 +24,55 @@ pub const QUIT_GRACE: Duration = Duration::from_secs(15);
 pub const LOG_LINES: usize = 40;
 
 const READY_PREFIX: &str = "Ready: http://127.0.0.1:";
+/// Size cap for the persistent log; lines past it are dropped until the next
+/// app start truncates the file.
+pub const LOG_FILE_CAP: u64 = 5 * 1024 * 1024;
+
+/// A persistent copy of the launcher's output (and the shell's own notes),
+/// so a packaged app, which has no visible stderr, still leaves a log to send.
+/// Cheap to clone; shared across retries.
+#[derive(Clone)]
+pub struct LogFile {
+    path: PathBuf,
+    inner: Arc<Mutex<LogState>>,
+}
+
+struct LogState {
+    file: Option<std::fs::File>,
+    written: u64,
+}
+
+impl LogFile {
+    /// Create (or truncate) `path`, making its parent dirs.
+    pub fn create(path: &Path) -> Result<LogFile, String> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        }
+        let file = std::fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(LogFile { path: path.to_path_buf(), inner: Arc::new(Mutex::new(LogState { file: Some(file), written: 0 })) })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Append one line. Write errors are ignored: logging must never stop
+    /// the readers from draining the pipes.
+    pub fn line(&self, line: &str) {
+        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let st = &mut *guard;
+        let len = line.len() as u64 + 1;
+        let Some(file) = st.file.as_mut() else { return };
+        if st.written + len > LOG_FILE_CAP {
+            let _ = file.write_all(b"[log truncated: size cap reached]\n");
+            st.file = None;
+            return;
+        }
+        if file.write_all(line.as_bytes()).and_then(|_| file.write_all(b"\n")).is_ok() {
+            st.written += len;
+        }
+    }
+}
 
 pub struct Backend {
     /// Behind a mutex so the health wait, a retry and app exit can all reach
@@ -73,6 +122,11 @@ pub fn ensure_executable(path: &Path) -> Result<(), String> {
 
 /// Start `launcher.py` from the bundle at `backend_dir` on a fresh port.
 pub fn spawn(backend_dir: &Path) -> Result<Backend, String> {
+    spawn_logged(backend_dir, None)
+}
+
+/// `spawn`, also appending the launcher's output to `log`.
+pub fn spawn_logged(backend_dir: &Path, log: Option<LogFile>) -> Result<Backend, String> {
     let python = python_path(backend_dir);
     if !python.is_file() {
         return Err(format!("bundled Python not found at {}", python.display()));
@@ -92,12 +146,16 @@ pub fn spawn(backend_dir: &Path) -> Result<Backend, String> {
     for var in ["PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE"] {
         cmd.env_remove(var);
     }
-    spawn_command(cmd, port)
+    spawn_command_logged(cmd, port, log)
 }
 
 /// Spawn `cmd` with piped stdio and start the output readers. Split out from
 /// `spawn` so tests can supervise a stand-in process.
-pub fn spawn_command(mut cmd: Command, port: u16) -> Result<Backend, String> {
+pub fn spawn_command(cmd: Command, port: u16) -> Result<Backend, String> {
+    spawn_command_logged(cmd, port, None)
+}
+
+pub fn spawn_command_logged(mut cmd: Command, port: u16, log: Option<LogFile>) -> Result<Backend, String> {
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(windows)]
     {
@@ -109,16 +167,25 @@ pub fn spawn_command(mut cmd: Command, port: u16) -> Result<Backend, String> {
     let logs = Arc::new(Mutex::new(VecDeque::with_capacity(LOG_LINES)));
     let ready_port = Arc::new(AtomicU16::new(0));
     if let Some(out) = child.stdout.take() {
-        start_reader(out, logs.clone(), ready_port.clone());
+        start_reader(out, logs.clone(), ready_port.clone(), log.clone());
     }
     if let Some(err) = child.stderr.take() {
-        start_reader(err, logs.clone(), ready_port.clone());
+        start_reader(err, logs.clone(), ready_port.clone(), log.clone());
     }
-    eprintln!("[backend] launcher pid {} on port {port}", child.id());
+    let note = format!("[shell] launcher pid {} on port {port}", child.id());
+    eprintln!("{note}");
+    if let Some(log) = &log {
+        log.line(&note);
+    }
     Ok(Backend { child: Mutex::new(child), port, ready_port, logs })
 }
 
-fn start_reader<R: Read + Send + 'static>(stream: R, logs: Arc<Mutex<VecDeque<String>>>, ready_port: Arc<AtomicU16>) {
+fn start_reader<R: Read + Send + 'static>(
+    stream: R,
+    logs: Arc<Mutex<VecDeque<String>>>,
+    ready_port: Arc<AtomicU16>,
+    log: Option<LogFile>,
+) {
     thread::spawn(move || {
         let mut reader = BufReader::new(stream);
         let mut buf = Vec::new();
@@ -135,6 +202,9 @@ fn start_reader<R: Read + Send + 'static>(stream: R, logs: Arc<Mutex<VecDeque<St
                 }
             }
             eprintln!("[backend] {line}");
+            if let Some(log) = &log {
+                log.line(&line);
+            }
             let mut logs = logs.lock().unwrap_or_else(|e| e.into_inner());
             if logs.len() == LOG_LINES {
                 logs.pop_front();
@@ -242,6 +312,42 @@ mod tests {
     }
 
     #[test]
+    fn log_file_gets_output_and_is_truncated_on_create() {
+        let dir = std::env::temp_dir().join(format!("ka-logtest-{}", std::process::id()));
+        let path = dir.join("nested").join("backend.log");
+        let log = LogFile::create(&path).unwrap();
+        log.line("stale");
+        let log = LogFile::create(&path).unwrap(); // a new app start truncates
+        let mut cmd = python();
+        cmd.args(["-u", "-c", "import sys; print('hello'); print('oops', file=sys.stderr); sys.stdin.read()"]);
+        let backend = spawn_command_logged(cmd, 1, Some(log.clone())).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while backend.last_log_lines().len() < 2 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
+        backend.shutdown();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("stale"), "{text}");
+        assert!(text.contains("hello\n") && text.contains("oops\n") && text.contains("launcher pid"), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn log_file_stops_at_cap() {
+        let dir = std::env::temp_dir().join(format!("ka-logcap-{}", std::process::id()));
+        let path = dir.join("backend.log");
+        let log = LogFile::create(&path).unwrap();
+        let line = "x".repeat(1023);
+        for _ in 0..(LOG_FILE_CAP / 1024 + 10) {
+            log.line(&line);
+        }
+        let size = std::fs::metadata(&path).unwrap().len();
+        assert!(size <= LOG_FILE_CAP + 64, "{size}");
+        assert!(std::fs::read_to_string(&path).unwrap().ends_with("[log truncated: size cap reached]\n"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn port_is_free_after_pick() {
         let port = pick_port().unwrap();
         assert_ne!(port, 0);
@@ -280,15 +386,18 @@ mod tests {
         cmd.args([
             "-u",
             "-c",
-            "import sys\n\
+            "import sys, time\n\
              for i in range(60): print(f'out {i}')\n\
+             time.sleep(0.5)  # streams have separate readers; keep the order\n\
              print('err line', file=sys.stderr)\n\
              print('Ready: http://127.0.0.1:4321')\n\
              sys.stdin.read()",
         ]);
         let backend = spawn_command(cmd, 1).unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
-        while backend.port() != 4321 && Instant::now() < deadline {
+        // Two reader threads: wait for both streams, not just the Ready line.
+        let has_err = |b: &Backend| b.last_log_lines().iter().any(|l| l == "err line");
+        while (backend.port() != 4321 || !has_err(&backend)) && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(20));
         }
         assert_eq!(backend.port(), 4321);

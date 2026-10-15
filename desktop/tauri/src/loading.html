@@ -97,6 +97,14 @@
     user-select: text;
     -webkit-user-select: text;
   }
+  #logfile code {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--fg);
+    word-break: break-all;
+    user-select: text;
+    -webkit-user-select: text;
+  }
   button {
     font: inherit;
     font-size: 14px;
@@ -122,6 +130,7 @@
     <h1>Knowledge Agent couldn’t start</h1>
     <p>The local service didn’t come up. The last lines it printed are below.</p>
     <pre id="log"></pre>
+    <p id="logfile" hidden>The full log is saved at <code id="logpath"></code>. Include it if you report this problem.</p>
     <button id="retry" type="button">Try again</button>
   </section>
 </main>
@@ -131,7 +140,13 @@
     var log = document.getElementById("log");
     var retry = document.getElementById("retry");
 
-    function showError(lines) {
+    var logfile = document.getElementById("logfile");
+    var logpath = document.getElementById("logpath");
+
+    function showError(status) {
+      var lines = status && status.lines;
+      logfile.hidden = !(status && status.log_path);
+      logpath.textContent = (status && status.log_path) || "";
       log.textContent = (lines && lines.length ? lines : ["(no output)"]).join("\n");
       log.scrollTop = log.scrollHeight;
       retry.disabled = false;
@@ -147,7 +162,7 @@
     tauri.event.listen("backend-failed", function (event) { showError(event.payload); });
     // A failure may have been reported before this page subscribed.
     tauri.core.invoke("backend_status").then(function (status) {
-      if (status && status.state === "failed") showError(status.lines);
+      if (status && status.state === "failed") showError(status);
     });
     retry.addEventListener("click", function () {
       retry.disabled = true;
