@@ -177,14 +177,14 @@ export function ConnectionCard({
   // A refusal before any event was published (Sync now, auto-sync) comes from status.needs_reconnect or `refused`.
   const isGithub = status.provider === "github";
   const github = isGithub && status.connected ? status.github : null;
-  const needsReconnect =
-    isGithub
-      ? status.connected && (refused || !!status.needs_reconnect)
-      : status.provider === "jira" &&
+  const jiraNeedsReconnect =
+    status.provider === "jira" &&
     status.connected &&
     (refused ||
       !!status.needs_reconnect ||
       (!healthy && (lastError === undefined || lastError.includes(JIRA_RECONNECT))));
+  const githubNeedsReconnect = isGithub && status.connected && (refused || !!status.needs_reconnect);
+  const needsReconnect = jiraNeedsReconnect || githubNeedsReconnect;
   const statusLabel = waiting
     ? "WAITING FOR YOU"
     : kept
@@ -274,16 +274,6 @@ export function ConnectionCard({
             <div className="flex flex-col gap-1 rounded-xl border border-ink-800 p-3">
               <p className="text-[15px] font-medium text-ink-100">No repositories yet</p>
               <p className="text-[13px] text-ink-400">After choosing them on GitHub, come back here and press Sync now.</p>
-              {github.choose_url && (
-                <a
-                  href={github.choose_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="w-fit text-[13px] font-semibold text-ink-200 underline underline-offset-2 hover:text-ink-100"
-                >
-                  Choose repositories on GitHub
-                </a>
-              )}
             </div>
           )}
         </>

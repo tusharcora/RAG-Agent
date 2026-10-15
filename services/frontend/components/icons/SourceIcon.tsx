@@ -1,3 +1,5 @@
+const SHOW_MARKS = process.env.NEXT_PUBLIC_BRAND_MARKS === "1";
+
 export function SourceIcon({ source, className = "h-4 w-4" }: { source: string; className?: string }) {
   if (source === "notion") {
     return (
@@ -6,8 +8,11 @@ export function SourceIcon({ source, className = "h-4 w-4" }: { source: string; 
       </svg>
     );
   }
-  // No GitHub logo is drawn here; fall back to the name alone rather than showing the Jira mark.
-  if (source === "github") return null;
+  // The official mark (public/brand/github.svg) only once NEXT_PUBLIC_BRAND_MARKS=1, like the sign-in ProviderButton;
+  // otherwise no icon rather than the Jira mark.
+  if (source === "github") {
+    return SHOW_MARKS ? <img src="/brand/github.svg" alt="" className={className} /> : null;
+  }
   return (
     <svg viewBox="0 0 24 24" className={className} fill="currentColor" aria-label="Jira">
       <path d="M22.4 2H11.7a4.9 4.9 0 0 0 4.9 4.9h2v1.9a4.9 4.9 0 0 0 4.9 4.9V2.9a.9.9 0 0 0-.9-.9zM17.13 7.27H6.43a4.9 4.9 0 0 0 4.9 4.9h2v1.9a4.9 4.9 0 0 0 4.9 4.9V8.17a.9.9 0 0 0-.9-.9zM11.87 12.53H1.16a4.9 4.9 0 0 0 4.9 4.9h2v1.9a4.9 4.9 0 0 0 4.9 4.9V13.43a.9.9 0 0 0-.9-.9z" />

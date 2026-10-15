@@ -1,6 +1,6 @@
 import uuid
-from urllib.parse import quote
 from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
 
 import httpx
 from cryptography.fernet import InvalidToken
