@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
+import httpx
 from fastapi import HTTPException
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
@@ -46,6 +47,8 @@ MAX_FILE_BYTES = 1024 * 1024
 ISSUE_OVERLAP = timedelta(hours=1)
 FULL_SCAN_EVERY = timedelta(days=7)
 UNAVAILABLE = "Couldn't reach GitHub. Try again in a moment."
+REDIRECTS = (301, 302, 307, 308)
+MAX_REDIRECTS = 2
 
 
 @dataclass
@@ -67,6 +70,17 @@ def _parse_time(value: str | None) -> datetime | None:
 
 def _since_param(when: datetime) -> str:
     return when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _same_repo_redirect(resp: httpx.Response, repo_id: int) -> str | None:
+    """The redirect's target when it stays inside repository `repo_id` (the API's
+    /repositories/{id}/... form of a renamed repository), else None. Same rule as the worker's
+    GithubClient."""
+    location = resp.headers.get("Location")
+    if not location:
+        return None
+    target = httpx.URL(resp.request.url).join(location)
+    return str(target) if target.path.startswith(f"/repositories/{repo_id}/") else None
 
 
 def _repo_prefixes(repo_id: int) -> tuple[str, ...]:
@@ -295,21 +309,34 @@ class _IssueStream:
         """After a complete full-scan listing: documents updated inside the window that the listing
         didn't return. Page-numbered pagination of a list that changes during the scan can skip an
         item, so each is checked on its own: deleted on 404/410 or when it moved to another repo
-        (301, or another repository_url); kept on any other answer. Returns the ones still here, to
-        be examined (enqueued if changed). A rate limit/outage raises and leaves the scan incomplete."""
+        (a redirect out of this repository id, or another repository_url); kept on any other answer,
+        including a redirect inside this repository (renamed meanwhile; followed, as the worker does).
+        Returns the ones still here, to be examined (enqueued if changed). A rate limit/outage raises
+        and leaves the scan incomplete."""
         repo, gone, present = self.repo, [], []
         for external_id, version in self.docs.items():
             updated = _parse_time(version)
             if external_id in self.seen or updated is None or updated < self.window_start:
                 continue
             number = external_id.rsplit(":", 1)[1]
-            resp = await self.ctx.client.get(f"/repos/{repo.full_name}/issues/{number}")
-            if resp.status_code in (301, 404, 410):
+            resp, redirected = await self.ctx.client.get(f"/repos/{repo.full_name}/issues/{number}"), False
+            for _ in range(MAX_REDIRECTS + 1):
+                if resp.status_code not in REDIRECTS:
+                    break
+                target = _same_repo_redirect(resp, repo.repo_id)
+                if target is None:
+                    break
+                resp, redirected = await self.ctx.client.get(target), True
+            if resp.status_code in REDIRECTS:
+                if _same_repo_redirect(resp, repo.repo_id) is None:
+                    gone.append(external_id)  # moved to another repository
+                # else: still redirecting inside this repository; can't confirm, keep it
+            elif resp.status_code in (404, 410):
                 gone.append(external_id)
             elif resp.status_code == 200:
                 raw = resp.json()
                 where = str(raw.get("repository_url") or "").lower()
-                if where and not where.endswith(f"/repos/{repo.full_name.lower()}"):
+                if not redirected and where and not where.endswith(f"/repos/{repo.full_name.lower()}"):
                     gone.append(external_id)
                 else:
                     present.append(raw)

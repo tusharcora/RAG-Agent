@@ -74,6 +74,8 @@ class FakeGitHub:
         # Items GET /repos/{full_name}/issues/{n} still finds although the listing skipped them.
         self.hidden: dict[tuple[str, int], dict] = {}
         self.fail: dict[tuple[str, int], int] = {}  # (path, page) -> status, every time
+        self.redirects: dict[str, str] = {}  # path -> Location of a 301
+        self.direct: dict[str, dict] = {}  # path (e.g. /repositories/{id}/issues/{n}) -> body
         self.requests: list[httpx.Request] = []
         self.per_page = 2
         self.tokens = {"tok"}
@@ -98,6 +100,10 @@ class FakeGitHub:
         page = int(request.url.params.get("page", "1"))
         if (path, page) in self.fail:
             return httpx.Response(self.fail[(path, page)], json={"message": "boom"})
+        if path in self.redirects:
+            return httpx.Response(301, headers={"Location": self.redirects[path]}, json={"message": "Moved Permanently"})
+        if path in self.direct:
+            return httpx.Response(200, json=self.direct[path])
         parts = path.strip("/").split("/")
         if path == "/user/installations":
             items = [{"id": i, "account": {"login": "octo"}} for i in self.installations]
@@ -599,6 +605,27 @@ def test_full_scan_confirms_missing_items_before_deleting(gh, published, factory
     assert result["removed"] == 2
     assert [(e["routing_key"], e["payload"]["number"]) for e in published] == [("rag.github_pr_updated", 6)]
     assert repos(pg_dsn, conn_id)[11]["last_full_scan_at"] is not None
+
+
+def test_full_scan_follows_same_repo_redirects_only(gh, published, factory, pg_dsn):
+    # Mirrors the worker: a redirect inside the same repository id (renamed meanwhile) is followed;
+    # one to another repository (transferred) means gone; a redirect loop is "couldn't confirm".
+    _, conn_id = seed_conn(pg_dsn)
+    now = datetime.now(timezone.utc)
+    seed_repo(pg_dsn, conn_id, repo(11, "a"), tree_sha="empty-tree")
+    gh.installations = {1: [repo(11, "a")]}
+    v = iso(now - timedelta(days=10))
+    gh.redirects["/repos/octo/a/issues/3"] = f"{API}/repositories/11/issues/3"
+    gh.direct["/repositories/11/issues/3"] = {**issue(3, v), "repository_url": f"{API}/repos/octo/renamed"}
+    gh.redirects["/repos/octo/a/issues/4"] = f"{API}/repositories/77/issues/1"
+    gh.redirects["/repos/octo/a/issues/5"] = f"{API}/repositories/11/issues/5"
+    gh.redirects["/repositories/11/issues/5"] = f"{API}/repositories/11/issues/5"  # loops
+    for number in (3, 4, 5):
+        seed_doc(pg_dsn, conn_id, f"issue:11:{number}", v)
+    result = sync(factory, conn_id)
+    assert set(docs(pg_dsn, conn_id)) == {"issue:11:3", "issue:11:5"}
+    assert result["removed"] == 1 and published == []
+    assert len(gh.calls("/repositories/77/")) == 0  # another repository's redirect isn't followed
 
 
 def test_cursor_stays_before_an_item_whose_publish_failed(gh, factory, pg_dsn, monkeypatch):
