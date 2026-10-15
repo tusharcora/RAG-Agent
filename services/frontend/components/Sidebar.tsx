@@ -36,6 +36,9 @@ export default function Sidebar() {
   const pathname = usePathname();
   const { user, logout } = useAuth();
 
+  // First-run setup is full-screen.
+  if (pathname.startsWith("/setup")) return null;
+
   return (
     <aside className="flex shrink-0 flex-col gap-3 border-b border-ink-800 bg-ink-950 px-3 py-3 md:sticky md:top-0 md:h-screen md:w-[248px] md:gap-6 md:border-r md:border-b-0 md:px-[18px] md:pt-7 md:pb-5">
       <Link href="/" className="px-2.5">

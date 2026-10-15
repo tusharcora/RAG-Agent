@@ -3,11 +3,14 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { me as fetchMe, logout as apiLogout, localSession } from "./api";
+import { getSetupStatus } from "./setup";
 import type { MeResponse } from "./types";
 
 interface AuthState {
   user: MeResponse | null;
   loading: boolean;
+  /** Desktop only: whether first-run setup is finished. null = unknown / not desktop. */
+  setupComplete: boolean | null;
   refresh: () => Promise<void>;
   logout: () => Promise<void>;
 }
@@ -32,6 +35,7 @@ const normalize = (p: string) => (p.length > 1 ? p.replace(/\/+$/, "") : p);
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<MeResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [setupComplete, setSetupComplete] = useState<boolean | null>(null);
   const pathname = usePathname();
   const router = useRouter();
 
@@ -39,6 +43,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const current = IS_DESKTOP ? await localSession() : await fetchMe();
       setUser(current);
+      if (IS_DESKTOP) {
+        try {
+          setSetupComplete((await getSetupStatus()).setup_complete);
+        } catch {
+          setSetupComplete(null); // unknown: don't trap the user on /setup
+        }
+      }
     } catch {
       setUser(null);
     } finally {
@@ -56,12 +67,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const path = normalize(pathname);
     if (IS_DESKTOP) {
       if (AUTH_ONLY_PATHS.has(path)) router.replace("/");
+      else if (setupComplete === false && path !== "/setup") router.replace("/setup");
+      else if (setupComplete === true && path === "/setup") router.replace("/");
       return;
     }
     const isPublic = PUBLIC_PATHS.has(path);
     if (!user && !isPublic) router.replace("/login");
     if (user && AUTH_ONLY_PATHS.has(path)) router.replace("/");
-  }, [loading, user, pathname, router]);
+  }, [loading, user, setupComplete, pathname, router]);
 
   async function logout() {
     if (IS_DESKTOP) return; // nothing to sign out of on a single-user install
@@ -70,7 +83,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     router.replace("/login");
   }
 
-  return <AuthContext.Provider value={{ user, loading, refresh, logout }}>{children}</AuthContext.Provider>;
+  return <AuthContext.Provider value={{ user, loading, setupComplete, refresh, logout }}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth(): AuthState {
