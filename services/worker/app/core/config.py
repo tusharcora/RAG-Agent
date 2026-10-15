@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     rabbitmq_url: str = "amqp://guest:guest@localhost:5672/"
 
     otel_exporter_otlp_endpoint: str = "http://localhost:4317"
+    # Off in the single-server deployment, which has no collector running.
+    otel_enabled: bool = True
     otel_service_name: str = "worker"
 
     # How many events this worker consumes concurrently. Bump for I/O-bound

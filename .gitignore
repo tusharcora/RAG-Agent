@@ -7,3 +7,5 @@ node_modules/
 *.log
 .DS_Store
 .claude/worktrees/
+.env.production
+backups/

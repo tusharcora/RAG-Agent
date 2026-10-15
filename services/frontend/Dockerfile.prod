@@ -1,0 +1,29 @@
+# Production build of the dashboard (the dev Dockerfile runs `next dev`).
+FROM node:20-alpine AS deps
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
+
+FROM node:20-alpine AS build
+WORKDIR /app
+# Next bakes rewrites and NEXT_PUBLIC_* values into the build, so these are
+# build args, not runtime env.
+ARG API_PROXY_TARGET=http://api:8000
+ARG NEXT_PUBLIC_MCP_URL
+ENV API_PROXY_TARGET=$API_PROXY_TARGET \
+    NEXT_PUBLIC_MCP_URL=$NEXT_PUBLIC_MCP_URL \
+    NEXT_TELEMETRY_DISABLED=1
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+RUN npm run build
+
+FROM node:20-alpine AS run
+WORKDIR /app
+ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1
+COPY --from=build /app/package.json ./
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/.next ./.next
+COPY --from=build /app/next.config.js ./
+USER node
+EXPOSE 3000
+CMD ["npx", "next", "start", "-p", "3000"]

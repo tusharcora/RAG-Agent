@@ -1,0 +1,127 @@
+# Single-server production stack (Oracle Cloud Always Free, see DEPLOY.md).
+#
+#   docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build
+#
+# Differences from docker-compose.yml (local dev):
+# - Nothing is published on the host. The only way in is the Cloudflare
+#   Tunnel, which forwards https://$APP_DOMAIN to the frontend; the browser
+#   reaches the API through the frontend's same-origin /api proxy.
+# - Production builds, no code mounts or auto-reload.
+# - No OTel collector / Prometheus / Grafana (too heavy for the free VM);
+#   OTEL_ENABLED=false stops the services trying to export to them.
+# - Memory caps sized for a 2 OCPU / 12 GB Ampere A1 instance.
+
+x-app-env: &app-env
+  DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+  REDIS_URL: redis://redis:6379/0
+  RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+  OTEL_ENABLED: "false"
+  ENVIRONMENT: production
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/postgres:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    mem_limit: 2g
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    mem_limit: 384m
+
+  rabbitmq:
+    image: rabbitmq:3.13-alpine
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    volumes:
+      - rabbitdata:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+    mem_limit: 768m
+
+  api:
+    build:
+      context: ./services/api
+    restart: unless-stopped
+    env_file: .env.production
+    environment:
+      <<: *app-env
+      OTEL_SERVICE_NAME: api
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    mem_limit: 1g
+
+  worker:
+    build:
+      context: ./services/worker
+    restart: unless-stopped
+    env_file: .env.production
+    environment:
+      <<: *app-env
+      OTEL_SERVICE_NAME: worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    mem_limit: 1g
+
+  frontend:
+    build:
+      context: ./services/frontend
+      dockerfile: Dockerfile.prod
+      args:
+        API_PROXY_TARGET: http://api:8000
+        NEXT_PUBLIC_MCP_URL: https://${APP_DOMAIN}/api/mcp
+    restart: unless-stopped
+    depends_on:
+      - api
+    mem_limit: 768m
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - frontend
+    mem_limit: 256m
+
+volumes:
+  pgdata:
+  redisdata:
+  rabbitdata:

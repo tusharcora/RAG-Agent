@@ -22,10 +22,15 @@ def setup_telemetry() -> None:
     """
     resource = Resource.create({SERVICE_NAME: settings.otel_service_name})
     provider = TracerProvider(resource=resource)
+    logging.basicConfig(level=settings.log_level)
+    if not settings.otel_enabled:
+        # Spans are still created (trace ids keep working) but not exported.
+        trace.set_tracer_provider(provider)
+        logger.info("Telemetry export disabled (OTEL_ENABLED=false)")
+        return
     exporter = OTLPSpanExporter(endpoint=settings.otel_exporter_otlp_endpoint, insecure=True)
     provider.add_span_processor(BatchSpanProcessor(exporter))
     trace.set_tracer_provider(provider)
-    logging.basicConfig(level=settings.log_level)
     logger.info("Telemetry configured, exporting to %s", settings.otel_exporter_otlp_endpoint)
 
 
