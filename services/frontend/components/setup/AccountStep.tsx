@@ -57,7 +57,7 @@ export function AccountStep({ onDone }: { onDone: () => void }) {
           >
             Skip for now
           </button>
-          <p className="text-[13px] text-ink-500">Opens in your browser. We only receive your name, email.</p>
+          <p className="text-[13px] text-ink-500">Opens in your browser. We only receive your name and email.</p>
         </div>
       )}
     </SetupShell>
