@@ -115,18 +115,47 @@ def test_github_replaces_google_link(client, fake_broker, pg_dsn):  # noqa: F811
     assert _user(pg_dsn, c.user_id) == {"email": gh["email"], "display_name": "ada-gh"}
 
 
-def test_identity_without_email_keeps_local_email(client, fake_broker, pg_dsn):  # noqa: F811
+def test_identity_without_email_uses_local_email(client, fake_broker, pg_dsn):  # noqa: F811
+    _drop_local_user(pg_dsn)
     c = client(db=True)
-    before = _user(pg_dsn, c.user_id)["email"]
     page = _sign_in(c, fake_broker, _identity("github", email=None, name="octo"))
     assert "Signed in as octo" in page
-    assert _user(pg_dsn, c.user_id) == {"email": before, "display_name": "octo"}
+    assert _user(pg_dsn, c.user_id) == {"email": LOCAL_EMAIL, "display_name": "octo"}
     status = c.get("/account").json()
     assert status["signed_in"] is True and status["provider"] == "github"
     assert status["email"] is None and status["name"] == "octo"
 
 
+def test_switch_to_identity_without_email_drops_previous_email(client, fake_broker, pg_dsn):  # noqa: F811
+    _drop_local_user(pg_dsn)
+    c = client(db=True)
+    g = _identity("google")
+    _sign_in(c, fake_broker, g)
+    assert _user(pg_dsn, c.user_id)["email"] == g["email"]
+    assert "Signed in as octo" in _sign_in(c, fake_broker, _identity("github", email=None, name="octo"))
+    # Google's email must not linger on a profile now signed in with GitHub.
+    assert _user(pg_dsn, c.user_id) == {"email": LOCAL_EMAIL, "display_name": "octo"}
+    assert [i["provider"] for i in _identities(pg_dsn, c.user_id)] == ["github"]
+
+
+def test_identity_without_email_refused_when_local_email_taken(client, fake_broker, pg_dsn):  # noqa: F811
+    _drop_local_user(pg_dsn)
+    db_run(pg_dsn, "INSERT INTO users (id, email) VALUES ($1, $2)", uuid.uuid4(), LOCAL_EMAIL)
+    try:
+        c = client(db=True)
+        g = _identity("google")
+        _sign_in(c, fake_broker, g)
+        page = _sign_in(c, fake_broker, _identity("github", email=None, name="octo"))
+        assert "Another local profile already exists on this computer." in page
+        # Nothing changed: still signed in with Google.
+        assert _user(pg_dsn, c.user_id)["email"] == g["email"]
+        assert [i["provider"] for i in _identities(pg_dsn, c.user_id)] == ["google"]
+    finally:
+        _drop_local_user(pg_dsn)
+
+
 def test_identity_empty_name_falls_back(client, fake_broker, pg_dsn):  # noqa: F811
+    _drop_local_user(pg_dsn)  # its email-less GitHub sign-in takes the local placeholder email
     c = client(db=True)
     result = _identity("google", name="  ")
     local_part = result["email"].split("@")[0]

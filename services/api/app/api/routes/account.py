@@ -25,6 +25,7 @@ from app.models.rag import OAuthIdentity, User
 
 IDENTITY_PROVIDERS = ("google", "github")
 COLLISION = "That account is already linked to another profile on this computer."
+LOCAL_CLASH = "Another local profile already exists on this computer."
 
 
 def _desktop_only() -> None:
@@ -73,6 +74,14 @@ async def link_identity(session: AsyncSession, user_id: uuid.UUID, result: dict)
     ).scalar_one_or_none()
     if existing is not None and existing.user_id != user_id:
         raise ValueError(COLLISION)
+    if email is None and user.email != LOCAL_EMAIL:
+        # No email from this provider: fall back to the local placeholder (as sign-out does), never keep the
+        # previous provider's email. Same uniqueness guard as sign-out.
+        clash = (
+            await session.execute(select(User.id).where(User.email == LOCAL_EMAIL, User.id != user_id).limit(1))
+        ).first()
+        if clash is not None:
+            raise ValueError(LOCAL_CLASH)
     if email is not None:
         taken = (
             await session.execute(
@@ -99,8 +108,7 @@ async def link_identity(session: AsyncSession, user_id: uuid.UUID, result: dict)
     else:
         existing.email = email
 
-    if email is not None:
-        user.email = email
+    user.email = email if email is not None else LOCAL_EMAIL
     user.display_name = name
     user.updated_at = datetime.now(timezone.utc)
     await session.commit()
@@ -154,7 +162,7 @@ async def sign_out(auth: AuthContext = Depends(_owner), session: AsyncSession = 
             await session.execute(select(User.id).where(User.email == LOCAL_EMAIL, User.id != user.id).limit(1))
         ).first()
         if clash is not None:
-            raise HTTPException(status_code=409, detail="Another local profile already exists on this computer.")
+            raise HTTPException(status_code=409, detail=LOCAL_CLASH)
     await session.execute(delete(OAuthIdentity).where(OAuthIdentity.user_id == user.id))
     user.email = LOCAL_EMAIL
     user.display_name = None
