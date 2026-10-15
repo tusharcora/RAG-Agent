@@ -293,7 +293,7 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def _clear_orphans(url: str) -> None:
+def _clear_orphans(url: str, api_answering: bool = True) -> None:
     """Stop a backend whose launcher died without stopping it (a launcher
     from before children watched for that, or a hard kill). POSIX only:
     finds the API by the port it listens on, and the worker by this
@@ -303,11 +303,14 @@ def _clear_orphans(url: str) -> None:
         return
     port = url.rsplit(":", 1)[-1]
     pids: set[int] = set()
-    try:
-        out = subprocess.run(["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"], capture_output=True, text=True, timeout=5).stdout
-        pids |= {int(p) for p in out.split() if p.isdigit()}
-    except (OSError, subprocess.SubprocessError):
-        pass
+    # Only take the port's listener when it answers as our API: the port may
+    # since have been given to something else entirely.
+    if api_answering:
+        try:
+            out = subprocess.run(["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"], capture_output=True, text=True, timeout=5).stdout
+            pids |= {int(p) for p in out.split() if p.isdigit()}
+        except (OSError, subprocess.SubprocessError):
+            pass
     worker_cmd = f"{sys.executable} -m app.main"
     try:
         out = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True, timeout=5).stdout
@@ -345,12 +348,12 @@ def running_instance(home: Path) -> str | None:
         url, pid = info["url"], int(info["pid"])
     except (OSError, ValueError, KeyError, TypeError):
         return None
-    if not _health_ok(url):
-        return None
+    answering = _health_ok(url)
     if _pid_alive(pid):
-        return url
-    print(f"Stopping a leftover backend at {url} (its launcher had exited)", flush=True)
-    _clear_orphans(url)
+        return url if answering else None
+    if answering:
+        print(f"Stopping a leftover backend at {url} (its launcher had exited)", flush=True)
+    _clear_orphans(url, api_answering=answering)
     path.unlink(missing_ok=True)
     return None
 
