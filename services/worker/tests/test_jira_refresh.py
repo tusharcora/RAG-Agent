@@ -189,3 +189,33 @@ async def test_jira_worker_success_clears_column_and_transient_keeps_it(real_db)
     real_db.respond(ok)
     assert await real_db.run(lambda: jira._ensure_fresh_token(conn)) == "new-access"
     assert not await real_db.to_thread(real_db.flag, conn.id)
+
+
+@pytest.fixture
+def web_atlassian(real_db, monkeypatch):
+    def respond(handler):
+        monkeypatch.setattr(settings, "app_mode", "server")
+        transport = httpx.MockTransport(handler)
+        real = httpx.AsyncClient
+        monkeypatch.setattr(jira.httpx, "AsyncClient", lambda **kw: real(**{"transport": transport, **kw}))
+
+    return respond
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [400, 401, 403])
+async def test_jira_worker_web_refusal_sets_column(real_db, web_atlassian, status):
+    conn = await real_db.to_thread(real_db.seed)
+    web_atlassian(lambda r: httpx.Response(status, json={"error": "invalid_grant"}))
+    with pytest.raises(RuntimeError, match=RECONNECT):
+        await real_db.run(lambda: jira._ensure_fresh_token(conn))
+    assert await real_db.to_thread(real_db.flag, conn.id)
+
+
+@pytest.mark.asyncio
+async def test_jira_worker_web_server_error_does_not_set_column(real_db, web_atlassian):
+    conn = await real_db.to_thread(real_db.seed)
+    web_atlassian(lambda r: httpx.Response(503, json={"error": "x"}))
+    with pytest.raises(httpx.HTTPStatusError):
+        await real_db.run(lambda: jira._ensure_fresh_token(conn))
+    assert not await real_db.to_thread(real_db.flag, conn.id)

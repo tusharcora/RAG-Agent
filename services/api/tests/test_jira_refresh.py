@@ -218,3 +218,30 @@ async def test_transient_failure_does_not_set_column(setup, pg_dsn):
 def test_in_memory_flag_is_gone():
     assert not hasattr(jira_auth, "_NEEDS_RECONNECT")
     assert not hasattr(jira_auth, "needs_reconnect")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [400, 401, 403])
+async def test_web_atlassian_refusal_sets_column(setup, pg_dsn, status):
+    import asyncio
+
+    install, calls = setup
+    conn_id = await asyncio.to_thread(_seed_jira, pg_dsn)
+    install(lambda r: httpx.Response(status, json={"error": "invalid_grant"}), "server")
+    with pytest.raises(HTTPException) as exc:
+        await _refresh_with_db(pg_dsn, conn_id)
+    assert exc.value.status_code == 400 and exc.value.detail == RECONNECT
+    assert [str(c.url) for c in calls] == [jira_auth.JIRA_TOKEN_URL]
+    assert await asyncio.to_thread(_flag, pg_dsn, conn_id)
+
+
+@pytest.mark.asyncio
+async def test_web_atlassian_server_error_does_not_set_column(setup, pg_dsn):
+    import asyncio
+
+    install, _ = setup
+    conn_id = await asyncio.to_thread(_seed_jira, pg_dsn)
+    install(lambda r: httpx.Response(503, json={"error": "x"}), "server")
+    with pytest.raises(httpx.HTTPStatusError):
+        await _refresh_with_db(pg_dsn, conn_id)
+    assert not await asyncio.to_thread(_flag, pg_dsn, conn_id)

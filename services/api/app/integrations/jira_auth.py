@@ -16,6 +16,8 @@ from app.models.rag import OAuthConnection
 logger = logging.getLogger(__name__)
 
 JIRA_TOKEN_URL = "https://auth.atlassian.com/oauth/token"
+# Atlassian token-endpoint statuses that mean the refresh token was refused (reconnect needed).
+REFUSED_STATUSES = (400, 401, 403)
 RECONNECT = "Jira needs reconnecting. Use Reconnect on the Connections page."
 
 async def _mark_needs_reconnect(session: AsyncSession, connection: OAuthConnection) -> None:
@@ -87,8 +89,13 @@ async def ensure_fresh_token(session: AsyncSession, connection: OAuthConnection)
                     "refresh_token": refresh_token,
                 },
             )
-            resp.raise_for_status()
-            data = resp.json()
+        # Atlassian refusing the refresh token itself (e.g. invalid_grant: revoked, rotated away, expired) —
+        # same outcome as the sign-in Worker's refusal above. Other errors stay transient.
+        if resp.status_code in REFUSED_STATUSES:
+            await _mark_needs_reconnect(session, connection)
+            raise HTTPException(status_code=400, detail=RECONNECT)
+        resp.raise_for_status()
+        data = resp.json()
 
     new_access_token = data["access_token"]
     new_refresh_token = data.get("refresh_token", refresh_token)

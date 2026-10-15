@@ -93,7 +93,7 @@ async def seed(pg_dsn, *, access="A", refresh="R", expires_in=timedelta(hours=1)
             conn_id,
             org_id,
             None if disconnected else encrypt_token(access),
-            None if disconnected else encrypt_token(refresh),
+            None if disconnected or refresh is None else encrypt_token(refresh),
             None if disconnected else datetime.now(timezone.utc) + expires_in,
             datetime.now(timezone.utc) if disconnected else None,
             datetime.now(timezone.utc) if needs_reconnect else None,
@@ -367,3 +367,40 @@ async def test_broker_refresh_github_repos_status_mapping(monkeypatch, status, e
     monkeypatch.setattr(broker, "TRANSPORT", httpx.MockTransport(lambda r: httpx.Response(status, json={"error": "x"})))
     with pytest.raises(exc):
         await broker.refresh_github_repos("rt")
+
+
+@pytest.mark.asyncio
+async def test_missing_refresh_token_is_refused_and_flagged(factory, github, pg_dsn, monkeypatch):
+    monkeypatch.setattr(settings, "app_mode", "desktop")
+    github.handler = rotated()
+    conn_id = (await seed(pg_dsn, refresh=None, expires_in=-timedelta(minutes=1)))[1]
+    with pytest.raises(HTTPException) as exc:
+        await github_auth.github_access_token(conn_id)
+    assert exc.value.status_code == 409 and exc.value.detail == RECONNECT
+    assert github.calls == []
+    assert (await row(pg_dsn, conn_id))["needs_reconnect_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_uncommitted_row_lock_holder_times_out_as_unavailable(factory, github, pg_dsn, monkeypatch):
+    # A caller that still holds an uncommitted change to the row must not hang the refresher forever.
+    import asyncpg
+
+    monkeypatch.setattr(settings, "app_mode", "desktop")
+    monkeypatch.setattr(github_auth, "LOCK_TIMEOUT", "300ms")
+    github.handler = rotated()
+    conn_id = (await seed(pg_dsn, expires_in=-timedelta(minutes=1)))[1]
+    holder = await asyncpg.connect(pg_dsn)
+    tx = holder.transaction()
+    await tx.start()
+    try:
+        await holder.execute("UPDATE oauth_connections SET updated_at = now() WHERE id = $1", conn_id)
+        with pytest.raises(HTTPException) as exc:
+            await github_auth.github_access_token(conn_id)
+        assert exc.value.status_code == 502
+    finally:
+        await tx.rollback()
+        await holder.close()
+    assert github.calls == []
+    # Once the holder is gone, the refresher works normally.
+    assert await github_auth.github_access_token(conn_id) == "new-access"

@@ -17,7 +17,8 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 from cryptography.fernet import InvalidToken
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
+from sqlalchemy.exc import DBAPIError
 
 from app.core.config import settings
 from app.core.crypto import decrypt_token, encrypt_token
@@ -32,6 +33,10 @@ RECONNECT = "GitHub needs reconnecting. Use Reconnect on the Connections page."
 DISCONNECTED = "GitHub is disconnected. Connect it again to sync."
 UNAVAILABLE = "Couldn't reach GitHub to renew access. Try again in a moment."
 REFRESH_MARGIN = timedelta(minutes=5)
+# How long to wait for the connection row's lock. Longer than the slowest refresh another holder can be doing
+# (30 s HTTP timeout), so a concurrent refresher is waited for; a holder that never commits ends as "unavailable"
+# instead of hanging. Module constant so tests can shorten it.
+LOCK_TIMEOUT = "45s"
 DEFAULT_EXPIRES_IN = 28800  # GitHub App user tokens last 8 hours
 
 
@@ -103,20 +108,41 @@ async def _refresh(refresh_token: str) -> dict:
     return data
 
 
+def _is_lock_timeout(exc: DBAPIError) -> bool:
+    """Postgres lock_not_available (55P03), however the driver error is wrapped."""
+    for err in (exc.orig, getattr(exc.orig, "__cause__", None)):
+        if getattr(err, "sqlstate", None) == "55P03" or getattr(err, "pgcode", None) == "55P03":
+            return True
+    return False
+
+
 async def github_access_token(connection_id: uuid.UUID, failed_token: str | None = None) -> str:
     """A usable GitHub access token for the connection, refreshing it when it has under
     5 minutes left or when `failed_token` (the token a call just got a 401 with) is still
     the stored one. Raises GithubDisconnected / GithubNeedsReconnect / GithubUnavailable;
-    undecryptable stored credentials raise InvalidToken (handler failure → retry → dead-letter)."""
+    undecryptable stored credentials raise InvalidToken (handler failure → retry → dead-letter).
+
+    Opens its own session and locks the row. The caller must not hold uncommitted changes or
+    locks on this connection's row — commit first — or this waits LOCK_TIMEOUT and then fails
+    as unavailable."""
     async with get_session() as session:
-        connection = (
-            await session.execute(
-                select(OAuthConnection)
-                .where(OAuthConnection.id == connection_id)
-                .with_for_update()
-                .execution_options(populate_existing=True)
-            )
-        ).scalar_one_or_none()
+        try:
+            # SET LOCAL lasts for this transaction only (the pooled connection is not left changed).
+            await session.execute(text(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT}'"))
+            connection = (
+                await session.execute(
+                    select(OAuthConnection)
+                    .where(OAuthConnection.id == connection_id)
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                )
+            ).scalar_one_or_none()
+        except DBAPIError as exc:
+            if not _is_lock_timeout(exc):
+                raise
+            logger.warning("Timed out waiting for the lock on connection %s", connection_id)
+            await session.rollback()
+            raise GithubUnavailable() from exc
         if connection is None or connection.disconnected_at is not None or not connection.access_token:
             raise GithubDisconnected()
         try:
