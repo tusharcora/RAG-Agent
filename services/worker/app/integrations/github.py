@@ -230,13 +230,24 @@ class _Retry(Exception):
         self.wait = wait
 
 
+def _rate_limit_message(resp: httpx.Response) -> bool:
+    """A 403 whose message says it is a (secondary) rate limit, which GitHub may send without
+    Retry-After ("You have exceeded a secondary rate limit", "API rate limit exceeded")."""
+    try:
+        return "rate limit" in resp.text.lower()
+    except (UnicodeDecodeError, httpx.ResponseNotRead):
+        return False
+
+
 def _retry_wait(resp: httpx.Response, attempt: int) -> float | None:
     """Seconds to wait before retrying `resp`, or None when it isn't retryable: 5xx, 429 and the
-    rate-limit 403s (secondary limits carry Retry-After; an exhausted quota x-ratelimit-remaining: 0)."""
+    rate-limit 403s (secondary limits usually carry Retry-After; an exhausted quota
+    x-ratelimit-remaining: 0; either may come with only a "rate limit" message, then backing off)."""
     status = resp.status_code
     retry_after = resp.headers.get("Retry-After")
     exhausted = resp.headers.get("x-ratelimit-remaining") == "0"
-    if not (status >= 500 or status == 429 or (status == 403 and (retry_after is not None or exhausted))):
+    limited_403 = status == 403 and (retry_after is not None or exhausted or _rate_limit_message(resp))
+    if not (status >= 500 or status == 429 or limited_403):
         return None
     try:
         if retry_after is not None:

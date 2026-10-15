@@ -501,6 +501,48 @@ async def test_client_retries_5xx_and_rate_limits(engine, gh, embeds, pg_dsn, mo
     assert (await doc(pg_dsn, conn_id, f"file:{REPO_ID}:docs/guide.md")) is not None
 
 
+@pytest.mark.asyncio
+async def test_client_backs_off_on_secondary_rate_limit_403_without_retry_after(engine, gh, embeds, pg_dsn, monkeypatch):
+    from app.tasks.github import handle_github_file_updated
+
+    conn_id = await seed(pg_dsn)
+    waits = []
+
+    async def record_sleep(seconds):
+        waits.append(seconds)
+
+    monkeypatch.setattr(github, "_sleep", record_sleep)
+    answers = iter([
+        httpx.Response(403, json={"message": "You have exceeded a secondary rate limit. Please wait."}),
+        httpx.Response(403, json={"message": "API rate limit exceeded for user ID 1."}),
+        blob("eventually"),
+    ])
+    gh.routes["/repos/octo/repo/git/blobs/sha1"] = lambda request: next(answers)
+    await handle_github_file_updated(file_payload(conn_id))
+    assert len(waits) == 2
+    assert (await doc(pg_dsn, conn_id, f"file:{REPO_ID}:docs/guide.md")) is not None
+
+    # Persistently limited: unavailable (the event retries later), not an item failure.
+    gh.routes["/repos/octo/repo/git/blobs/sha2"] = httpx.Response(
+        403, json={"message": "You have exceeded a secondary rate limit."}
+    )
+    with pytest.raises(github.GithubUnavailable):
+        await handle_github_file_updated(file_payload(conn_id, sha="sha2"))
+
+
+@pytest.mark.asyncio
+async def test_permission_403_is_a_status_error_not_a_rate_limit(engine, gh, embeds, pg_dsn):
+    from app.tasks.github import handle_github_file_updated
+
+    conn_id = await seed(pg_dsn)
+    gh.routes["/repos/octo/repo/git/blobs/sha1"] = httpx.Response(
+        403, json={"message": "Resource not accessible by integration"}
+    )
+    with pytest.raises(GithubStatusError):
+        await handle_github_file_updated(file_payload(conn_id))
+    assert len(gh.github_calls()) == 1
+
+
 # ---------------------------------------------------------------- dead-letter hook
 
 

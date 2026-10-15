@@ -803,6 +803,66 @@ def test_resync_after_reset_is_not_deduped_by_the_worker(gh, published, factory,
     assert set(docs(pg_dsn, conn_id)) == {"file:11:a.md", "issue:11:1"}
 
 
+def _client_get(handler, path="/repos/octo/a/git/trees/main"):
+    async def go():
+        async def refresh(_failed):
+            raise AssertionError("no refresh expected")
+
+        async with github_api.GitHubClient("tok", refresh) as client:
+            return await client.get(path)
+
+    return asyncio.run(go())
+
+
+SECONDARY = {"message": "You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}
+
+
+def test_client_backs_off_on_secondary_rate_limit_403_without_retry_after(gh, monkeypatch):
+    waits = []
+
+    async def record(seconds):
+        waits.append(seconds)
+
+    monkeypatch.setattr(github_api, "_sleep", record)
+    answers = iter([
+        httpx.Response(403, json=SECONDARY),
+        httpx.Response(403, json={"message": "API rate limit exceeded for user ID 1."}),
+        httpx.Response(200, json={"ok": True}),
+    ])
+    monkeypatch.setattr(github_api, "TRANSPORT", httpx.MockTransport(lambda request: next(answers)))
+    assert _client_get(None).status_code == 200
+    assert len(waits) == 2
+
+
+def test_persistent_secondary_rate_limit_stops_the_sync_as_truncated(gh, published, factory, pg_dsn):
+    _, conn_id = seed_conn(pg_dsn)
+    gh.installations = {1: [repo(11, "a")]}
+    real = gh.handler
+
+    def limited(request):
+        if "/git/trees/" in request.url.path:
+            gh.requests.append(request)
+            return httpx.Response(403, json=SECONDARY)
+        return real(request)
+
+    github_api.TRANSPORT = httpx.MockTransport(limited)  # restored by the gh fixture's monkeypatch
+    result = sync(factory, conn_id)
+    assert result["truncated"] is True and result["published"] == 0
+    assert len(gh.calls("/git/trees/")) == github_api.RETRY_ATTEMPTS  # retried, not a one-off status error
+
+
+def test_permission_403_is_a_status_answer_not_a_rate_limit(gh, monkeypatch):
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(403, json={"message": "Resource not accessible by integration"})
+
+    monkeypatch.setattr(github_api, "TRANSPORT", httpx.MockTransport(handler))
+    assert _client_get(None).status_code == 403
+    assert len(calls) == 1
+
+
 # --------------------------------------------------------------------------- tokens, route, auto_sync
 
 
