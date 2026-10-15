@@ -163,7 +163,7 @@ async def _raise_for_status(resp: httpx.Response, provider: str) -> None:
     try:
         parsed = json.loads(body)
         err = parsed.get("error", parsed)
-        detail = err.get("message") if isinstance(err, dict) else str(err)
+        detail = (err.get("message") if isinstance(err, dict) else str(err)) or body
     except (ValueError, AttributeError):
         pass
     raise LlmError(f"{provider} returned {resp.status_code}: {detail[:300]}")
