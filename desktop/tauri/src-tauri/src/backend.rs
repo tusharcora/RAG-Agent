@@ -13,7 +13,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -251,6 +251,22 @@ impl Backend {
         child.try_wait().ok().flatten()
     }
 
+    /// Block until the launcher exits on its own, checking every `poll`.
+    /// Returns `None` once `stop` is set (a normal quit), so a deliberate
+    /// shutdown is never reported as a crash.
+    pub fn watch_exit(&self, stop: &AtomicBool, poll: Duration) -> Option<std::process::ExitStatus> {
+        loop {
+            if stop.load(Ordering::SeqCst) {
+                return None;
+            }
+            if let Some(status) = self.exit_status() {
+                // A quit that began while we waited for the child lock.
+                return if stop.load(Ordering::SeqCst) { None } else { Some(status) };
+            }
+            thread::sleep(poll);
+        }
+    }
+
     /// Close the lifeline, give the launcher `QUIT_GRACE` to stop Postgres
     /// and its children, then kill it. Idempotent; safe from any thread.
     pub fn shutdown(&self) {
@@ -418,6 +434,35 @@ mod tests {
         let err = backend.wait_healthy(Duration::from_secs(30)).unwrap_err();
         assert!(err.contains("exited"), "{err}");
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn watch_exit_reports_an_unexpected_exit() {
+        let mut cmd = python();
+        cmd.args(["-c", "import time; time.sleep(0.5); raise SystemExit(4)"]);
+        let backend = spawn_command(cmd, 1).unwrap();
+        let stop = AtomicBool::new(false);
+        let started = Instant::now();
+        let status = backend.watch_exit(&stop, Duration::from_millis(50)).expect("exit should be reported");
+        assert_eq!(status.code(), Some(4));
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn watch_exit_is_silent_on_a_normal_quit() {
+        let mut cmd = python();
+        cmd.args(["-c", "import sys; sys.stdin.read()"]);
+        let backend = Arc::new(spawn_command(cmd, 1).unwrap());
+        let stop = Arc::new(AtomicBool::new(false));
+        let watcher = {
+            let (backend, stop) = (backend.clone(), stop.clone());
+            thread::spawn(move || backend.watch_exit(&stop, Duration::from_millis(50)))
+        };
+        thread::sleep(Duration::from_millis(200));
+        // The shell's quit path: flag first, then stop the launcher.
+        stop.store(true, Ordering::SeqCst);
+        backend.shutdown();
+        assert!(watcher.join().unwrap().is_none());
     }
 
     #[test]

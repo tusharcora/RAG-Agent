@@ -15,6 +15,8 @@ use tauri::{AppHandle, Emitter, Manager, RunEvent, Url, WebviewWindowBuilder, Wi
 /// Global constraint: health poll timeout in the shell.
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(90);
 const MAIN: &str = "main";
+/// How often the shell checks that a running backend is still alive.
+const WATCH_POLL: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Serialize)]
 #[serde(tag = "state", rename_all = "lowercase")]
@@ -33,6 +35,9 @@ struct Shell {
     /// <app log dir>/backend.log, truncated at each app start. Unset if it
     /// couldn't be created; logging then goes to stderr only.
     log: OnceLock<LogFile>,
+    /// The bundled loading page's URL (platform-specific scheme), so the
+    /// window can go back to it if the backend dies after startup.
+    loading_url: OnceLock<Url>,
 }
 
 /// A shell message, to stderr and the persistent log.
@@ -63,8 +68,58 @@ fn backend_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join("resources").join("backend"))
 }
 
+/// Record a failure for the loading page (which reads it via
+/// `backend_status` on load) and tell a page that's already listening.
+fn report_failed(app: &AppHandle, lines: Vec<String>) {
+    let shell = app.state::<Shell>();
+    let log_path = shell.log.get().map(|l| l.path().display().to_string());
+    let failed = Status::Failed { lines, log_path };
+    *lock(&shell.status) = failed.clone();
+    let _ = app.emit("backend-failed", failed);
+}
+
+/// After startup: wait for the launcher to exit on its own (it does when the
+/// API or worker dies, or a post-setup restart fails). Then take the window
+/// back to the loading page's error view, where Try again works as usual.
+/// Returns quietly on a normal quit.
+fn watch_backend(app: &AppHandle, b: &Arc<Backend>) {
+    let shell = app.state::<Shell>();
+    let Some(status) = b.watch_exit(&shell.quitting, WATCH_POLL) else { return };
+    // Only the current backend's death counts, and only once: whoever takes
+    // it from the slot (us, or the exit handler) owns what happens next.
+    let current = {
+        let mut slot = lock(&shell.backend);
+        match slot.as_ref() {
+            Some(cur) if Arc::ptr_eq(cur, b) => slot.take(),
+            _ => None,
+        }
+    };
+    let Some(current) = current else { return };
+    current.shutdown(); // already exited; just reaps it
+    if shell.quitting.load(Ordering::SeqCst) {
+        return;
+    }
+    shell.port.store(0, Ordering::SeqCst); // backend pages are no longer internal
+    // Let the readers drain the launcher's last words.
+    thread::sleep(Duration::from_millis(300));
+    let mut lines = b.last_log_lines();
+    lines.push(format!("Error: the backend stopped unexpectedly ({status})"));
+    note(app, &format!("backend stopped unexpectedly ({status})"));
+    // Status first, so the loading page sees Failed when it loads.
+    report_failed(app, lines);
+    match (app.get_webview_window(MAIN), shell.loading_url.get()) {
+        (Some(window), Some(url)) => {
+            if let Err(e) = window.navigate(url.clone()) {
+                note(app, &format!("navigate to the loading page failed: {e}"));
+            }
+        }
+        _ => note(app, "no loading page to return to"),
+    }
+}
+
 /// Start the backend on a background thread so the loading page paints
-/// first; navigate to it when healthy, else report `backend-failed`.
+/// first; navigate to it when healthy, else report `backend-failed`. Once
+/// it's up, the same thread keeps watching it (`watch_backend`).
 fn start_backend(app: AppHandle) {
     *lock(&app.state::<Shell>().status) = Status::Starting;
     thread::spawn(move || {
@@ -96,6 +151,7 @@ fn start_backend(app: AppHandle) {
                         note(&app, &format!("navigate failed: {e}"));
                     }
                 }
+                watch_backend(&app, &b);
                 return;
             }
             Ok((b, Err(err))) => {
@@ -113,10 +169,7 @@ fn start_backend(app: AppHandle) {
         if let Some(last) = lines.last() {
             note(&app, &format!("backend failed to start: {last}"));
         }
-        let log_path = shell.log.get().map(|l| l.path().display().to_string());
-        let failed = Status::Failed { lines, log_path };
-        *lock(&shell.status) = failed.clone();
-        let _ = app.emit("backend-failed", failed);
+        report_failed(&app, lines);
     });
 }
 
@@ -187,6 +240,7 @@ fn main() {
             port: port.clone(),
             quitting: AtomicBool::new(false),
             log: OnceLock::new(),
+            loading_url: OnceLock::new(),
         })
         .invoke_handler(tauri::generate_handler![retry_backend, backend_status])
         .setup(move |app| {
@@ -210,7 +264,7 @@ fn main() {
             let nav_port = port.clone();
             let nav_app = app.handle().clone();
             let popup_app = app.handle().clone();
-            WebviewWindowBuilder::from_config(app.handle(), &config)?
+            let window = WebviewWindowBuilder::from_config(app.handle(), &config)?
                 .on_navigation(move |url| {
                     if is_internal(url, nav_port.load(Ordering::SeqCst)) {
                         return true;
@@ -224,6 +278,12 @@ fn main() {
                     NewWindowResponse::Deny
                 })
                 .build()?;
+            match window.url() {
+                Ok(url) => {
+                    let _ = app.state::<Shell>().loading_url.set(url);
+                }
+                Err(e) => note(app.handle(), &format!("no loading page URL: {e}")),
+            }
 
             // Installers don't always keep exec bits on resources. A missing
             // interpreter is reported by spawn() on the loading page instead.
