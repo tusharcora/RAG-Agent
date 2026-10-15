@@ -377,6 +377,16 @@ def path_d() -> None:
             expect(page.get_by_text("My workspace").first).to_be_visible(timeout=10000)
             expect(page.get_by_text("E2E Person")).to_have_count(0)
             print("D: signed out; sidebar back to 'My workspace'")
+
+            # Sign in again from Settings → Account (not only the first-open screen).
+            page.on("console", lambda m: print("  [console]", m.type, m.text))
+            with ctx.expect_page() as popup_info:
+                page.get_by_role("button", name="Continue with GitHub").click()
+            popup = popup_info.value
+            expect(popup.get_by_text("Signed in as E2E Person")).to_be_visible(timeout=20000)
+            popup.close()
+            expect(page.get_by_text("signed in with GitHub")).to_be_visible(timeout=20000)
+            print("D: signed in again from Settings with GitHub")
             b.close()
         launcher.stop()
         launcher = None
