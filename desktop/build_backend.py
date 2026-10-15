@@ -126,11 +126,31 @@ def extract_python(archive: Path, backend: Path) -> None:
 def install_dependencies(backend: Path, target: str) -> None:
     py = python_exe(backend, target)
     # requirements.txt has a relative `-r ../services/...`; run from desktop/.
+    # Isolated (-I) and a scrubbed env: the builder's user site, PYTHONPATH or
+    # PYTHONHOME must not satisfy requirements and leave them out of the bundle.
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME")}
+    env["PYTHONNOUSERSITE"] = "1"
     subprocess.run(
-        [str(py), "-m", "pip", "install", "--no-compile", "--disable-pip-version-check", "-r", "requirements.txt"],
+        [str(py), "-I", "-m", "pip", "install", "--no-compile", "--disable-pip-version-check", "-r", "requirements.txt"],
         cwd=DESKTOP,
         check=True,
+        env=env,
     )
+
+
+CHECK_IMPORTS = ("fastapi", "uvicorn", "pgserver", "asyncpg", "fakeredis", "sqlalchemy", "pgvector", "platformdirs", "pkg_resources")
+
+
+def check_imports(backend: Path, target: str) -> None:
+    """Fail the build if the bundled interpreter, run isolated, can't import
+    the key packages."""
+    py = python_exe(backend, target)
+    code = "import importlib,sys\nfor m in sys.argv[1:]: importlib.import_module(m)"
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME")}
+    r = subprocess.run([str(py), "-I", "-c", code, *CHECK_IMPORTS], capture_output=True, text=True, env=env)
+    if r.returncode != 0:
+        raise SystemExit(f"bundle sanity check failed: a required package is missing from the bundle\n{r.stderr}")
+    print("Bundle import check passed")
 
 
 def copy_sources(backend: Path) -> None:
@@ -165,6 +185,9 @@ def clean(backend: Path, target: str) -> None:
     shutil.rmtree(sp / "pip", ignore_errors=True)
     for p in sp.glob("pip-*"):
         shutil.rmtree(p, ignore_errors=True)
+    scripts = py / "Scripts" if is_windows(target) else py / "bin"
+    for p in scripts.glob("pip*"):
+        p.unlink()
     stdlib = py / "Lib" if is_windows(target) else py / "lib" / "python3.12"
     for name in ("ensurepip", "test", "idlelib", "turtledemo"):
         shutil.rmtree(stdlib / name, ignore_errors=True)
@@ -203,6 +226,7 @@ def main() -> int:
     if not args.skip_ui:
         build_ui(OUT)
     clean(OUT, target)
+    check_imports(OUT, target)
     (OUT / "BUILD_INFO.json").write_text(
         json.dumps({"target": target, "python_version": PYTHON_VERSION, "git_sha": git_sha()}, indent=2) + "\n"
     )
