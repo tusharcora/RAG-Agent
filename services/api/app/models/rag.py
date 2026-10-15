@@ -256,3 +256,39 @@ class ChatMessage(Base):
     # given; only ever set on assistant messages, but nothing in this model
     # enforces that — see the migration's comment.
     feedback: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class OrgLlmSettings(Base):
+    """Which model writes this org's chat answers. One row per org; no row
+    means the server default (Gemini). api_key_encrypted uses the same Fernet
+    encryption as oauth_connections tokens (core/crypto.py)."""
+
+    __tablename__ = "org_llm_settings"
+
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True
+    )
+    provider: Mapped[str] = mapped_column(Text, nullable=False, default="gemini")
+    model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    base_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    api_key_hint: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class OrgLlmCredential(Base):
+    """Per-provider saved credentials and choices for an org. Kept for every
+    provider an admin has configured, so switching the active provider in
+    org_llm_settings never discards another provider's key."""
+
+    __tablename__ = "org_llm_credentials"
+
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True
+    )
+    provider: Mapped[str] = mapped_column(Text, primary_key=True)
+    model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    base_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    api_key_hint: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())

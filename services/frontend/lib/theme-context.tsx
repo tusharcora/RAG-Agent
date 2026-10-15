@@ -1,44 +1,90 @@
 "use client";
 
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useState } from "react";
 
-export type Theme = "light" | "dark" | "cyberpunk";
+export type ThemeMode = "system" | "light" | "dark";
+export type Accent = "lime" | "peach" | "sky" | "lilac" | "rose" | "mint";
 
-const VALID_THEMES: Theme[] = ["light", "dark", "cyberpunk"];
+export const ACCENTS: { id: Accent; label: string; rgb: string }[] = [
+  { id: "lime", label: "Highlighter", rgb: "228 255 92" },
+  { id: "peach", label: "Peach", rgb: "255 184 154" },
+  { id: "sky", label: "Sky", rgb: "140 203 242" },
+  { id: "lilac", label: "Lilac", rgb: "196 176 255" },
+  { id: "rose", label: "Rose", rgb: "255 170 205" },
+  { id: "mint", label: "Mint", rgb: "130 226 176" },
+];
 
 interface ThemeState {
-  theme: Theme;
-  setTheme: (theme: Theme) => void;
+  mode: ThemeMode;
+  accent: Accent;
+  setMode: (mode: ThemeMode) => void;
+  setAccent: (accent: Accent) => void;
 }
 
 const ThemeContext = createContext<ThemeState | null>(null);
 
-const STORAGE_KEY = "theme";
+export const MODE_KEY = "atelier-theme";
+export const ACCENT_KEY = "atelier-accent";
+
+function apply(mode: ThemeMode, accent: Accent) {
+  const dark = mode === "dark" || (mode === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  const root = document.documentElement;
+  root.classList.toggle("dark-mode", dark);
+  root.setAttribute("data-accent", accent);
+}
+
+function readStored<T extends string>(key: string, allowed: readonly T[], fallback: T): T {
+  try {
+    const v = window.localStorage.getItem(key);
+    if (v && (allowed as readonly string[]).includes(v)) return v as T;
+  } catch {
+    // storage unavailable: fall back to the default
+  }
+  return fallback;
+}
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const [theme, setThemeState] = useState<Theme>("dark");
+  const [mode, setModeState] = useState<ThemeMode>("system");
+  const [accent, setAccentState] = useState<Accent>("lime");
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    const stored = window.localStorage.getItem(STORAGE_KEY);
-    if (VALID_THEMES.includes(stored as Theme)) setThemeState(stored as Theme);
+    setModeState(readStored(MODE_KEY, ["system", "light", "dark"] as const, "system"));
+    setAccentState(
+      readStored(ACCENT_KEY, ACCENTS.map((a) => a.id) as readonly Accent[], "lime"),
+    );
+    setReady(true);
   }, []);
 
   useEffect(() => {
-    const root = document.documentElement;
-    // "cyberpunk" is a skin layered on top of the dark palette (see
-    // styles/cyberpunk.css), not an independent fourth palette — it always
-    // carries dark-mode along with it. "light" is genuinely independent.
-    root.classList.toggle("dark-mode", theme === "dark" || theme === "cyberpunk");
-    root.classList.toggle("light-mode", theme === "light");
-    root.classList.toggle("theme-cyberpunk", theme === "cyberpunk");
-  }, [theme]);
+    if (!ready) return;
+    apply(mode, accent);
+    if (mode !== "system") return;
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = () => apply("system", accent);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, [mode, accent, ready]);
 
-  function setTheme(next: Theme) {
-    setThemeState(next);
-    window.localStorage.setItem(STORAGE_KEY, next);
-  }
+  const setMode = useCallback((next: ThemeMode) => {
+    setModeState(next);
+    try {
+      window.localStorage.setItem(MODE_KEY, next);
+    } catch {
+      // ignore
+    }
+  }, []);
 
-  return <ThemeContext.Provider value={{ theme, setTheme }}>{children}</ThemeContext.Provider>;
+  const setAccent = useCallback((next: Accent) => {
+    setAccentState(next);
+    try {
+      window.localStorage.setItem(ACCENT_KEY, next);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  return <ThemeContext.Provider value={{ mode, accent, setMode, setAccent }}>{children}</ThemeContext.Provider>;
 }
 
 export function useTheme(): ThemeState {

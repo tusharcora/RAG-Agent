@@ -1,0 +1,146 @@
+/* Atelier theme: porcelain light, warm grey dark, switchable accent. */
+
+
+:root {
+  --inv-bg: #111113;
+  --inv-ink: #FFFFFF;
+  --inv-ink2: #B8B8BF;
+  --inv-ink3: #D4D4DA;
+  --inv-track: #34343A;
+  --ok-bg: #E3F4EB;
+  --bad-bg: #FFF4F2;
+  --bad-line: #E8B4AF;
+  --ink-950: #F5F5F2;
+  --ink-900: #FFFFFF;
+  --ink-850: #FAFAF8;
+  --ink-800: #E3E2DD;
+  --ink-700: #D4D3CC;
+  --ink-600: #9A9AA2;
+  --ink-500: #6B6B72;
+  --ink-400: #55555C;
+  --ink-300: #3F3F45;
+  --ink-200: #2A2A2E;
+  --ink-100: #111113;
+  --ink-50: #000000;
+  --accent-rgb: 228 255 92;
+  --accent-hl: rgb(var(--accent-rgb));
+  color-scheme: light;
+}
+
+html.dark-mode {
+  --inv-bg: #1B1B1A;
+  --inv-ink: #FAF9F5;
+  --inv-ink2: #9C9A92;
+  --inv-ink3: #C2C0B6;
+  --inv-track: #3D3D3A;
+  --ok-bg: #213A2D;
+  --bad-bg: #3B2624;
+  --bad-line: #6B3A36;
+  --ink-950: #262624;
+  --ink-900: #30302E;
+  --ink-850: #2B2B29;
+  --ink-800: #3D3D3A;
+  --ink-700: #4D4D49;
+  --ink-600: #6B6A64;
+  --ink-500: #9C9A92;
+  --ink-400: #B0AEA5;
+  --ink-300: #C2C0B6;
+  --ink-200: #D8D6CC;
+  --ink-100: #FAF9F5;
+  --ink-50: #FFFFFF;
+  --accent-hl: rgb(var(--accent-rgb) / 0.38);
+  color-scheme: dark;
+}
+
+html[data-accent="lime"] { --accent-rgb: 228 255 92; }
+html[data-accent="peach"] { --accent-rgb: 255 184 154; }
+html[data-accent="sky"] { --accent-rgb: 140 203 242; }
+html[data-accent="lilac"] { --accent-rgb: 196 176 255; }
+html[data-accent="rose"] { --accent-rgb: 255 170 205; }
+html[data-accent="mint"] { --accent-rgb: 130 226 176; }
+
+html,
+html.dark-mode {
+  --color-bg-primary: var(--ink-950);
+  --color-bg-primary_hover: var(--ink-900);
+  --color-bg-primary-solid: var(--ink-100);
+  --color-bg-secondary: var(--ink-900);
+  --color-bg-secondary_hover: var(--ink-850);
+  --color-bg-secondary_alt: var(--ink-900);
+  --color-bg-tertiary: var(--ink-800);
+  --color-bg-quaternary: var(--ink-700);
+  --color-bg-active: var(--ink-800);
+  --color-bg-brand-solid: var(--ink-100);
+  --color-bg-brand-solid_hover: var(--ink-200);
+  --color-bg-brand-primary: rgb(var(--accent-rgb) / 0.3);
+  --color-bg-brand-primary_alt: rgb(var(--accent-rgb) / 0.3);
+  --color-bg-brand-secondary: rgb(var(--accent-rgb) / 0.5);
+  --color-text-primary: var(--ink-100);
+  --color-text-secondary: var(--ink-300);
+  --color-text-secondary_hover: var(--ink-200);
+  --color-text-tertiary: var(--ink-400);
+  --color-text-tertiary_hover: var(--ink-300);
+  --color-text-quaternary: var(--ink-500);
+  --color-text-disabled: var(--ink-600);
+  --color-text-placeholder: var(--ink-500);
+  --color-text-primary_on-brand: var(--ink-950);
+  --color-text-secondary_on-brand: var(--ink-800);
+  --color-text-tertiary_on-brand: var(--ink-800);
+  --color-text-quaternary_on-brand: var(--ink-700);
+  --color-text-brand-primary: var(--ink-100);
+  --color-text-brand-secondary: var(--ink-200);
+  --color-text-brand-secondary_hover: var(--ink-100);
+  --color-text-brand-tertiary: var(--ink-400);
+  --color-text-brand-tertiary_alt: var(--ink-400);
+  --color-border-primary: var(--ink-700);
+  --color-border-secondary: var(--ink-800);
+  --color-border-tertiary: var(--ink-850);
+  --color-border-disabled: var(--ink-800);
+  --color-border-brand: var(--ink-100);
+  --color-border-brand_alt: var(--ink-100);
+  --color-fg-primary: var(--ink-100);
+  --color-fg-secondary: var(--ink-300);
+  --color-fg-tertiary: var(--ink-400);
+  --color-fg-quaternary: var(--ink-500);
+  --color-fg-quaternary_hover: var(--ink-300);
+  --color-fg-white: var(--ink-950);
+  --color-fg-brand-primary: var(--ink-100);
+  --color-fg-brand-primary_alt: var(--ink-100);
+  --color-fg-brand-secondary: var(--ink-300);
+  --color-fg-brand-secondary_alt: var(--ink-300);
+  --color-fg-brand-secondary_hover: var(--ink-100);
+}
+
+@theme inline {
+  --color-ink-950: var(--ink-950);
+  --color-ink-900: var(--ink-900);
+  --color-ink-850: var(--ink-850);
+  --color-ink-800: var(--ink-800);
+  --color-ink-700: var(--ink-700);
+  --color-ink-600: var(--ink-600);
+  --color-ink-500: var(--ink-500);
+  --color-ink-400: var(--ink-400);
+  --color-ink-300: var(--ink-300);
+  --color-ink-200: var(--ink-200);
+  --color-ink-100: var(--ink-100);
+  --color-ink-50: var(--ink-50);
+  --color-accent: rgb(var(--accent-rgb));
+  --color-inv-bg: var(--inv-bg);
+  --color-inv-ink: var(--inv-ink);
+  --color-inv-ink2: var(--inv-ink2);
+  --color-inv-ink3: var(--inv-ink3);
+  --color-inv-track: var(--inv-track);
+  --color-ok-bg: var(--ok-bg);
+  --color-bad-bg: var(--bad-bg);
+  --color-bad-line: var(--bad-line);
+  --color-accent-ink: #111113;
+  --font-sans: var(--font-geist), -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  --font-body: var(--font-geist), -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  --font-display: var(--font-geist), -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  --font-serif: var(--font-instrument), Georgia, "Times New Roman", serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.hl {
+  box-shadow: inset 0 -0.38em 0 var(--accent-hl);
+}

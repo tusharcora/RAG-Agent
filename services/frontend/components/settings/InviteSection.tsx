@@ -40,7 +40,7 @@ export function InviteSection() {
   }
 
   return (
-    <section className="cyber-chamfer rounded-2xl border border-ink-800 bg-ink-900/60 p-5 shadow-panel">
+    <section className="rounded-2xl border border-ink-800 bg-ink-900 p-5">
       <h2 className="mb-1 text-sm font-semibold text-ink-100">Invite a member</h2>
       <p className="mb-3 text-sm text-ink-500">
         Generates a one-time invite token to share manually — no email is sent yet.

@@ -16,7 +16,7 @@ export function SessionListSkeleton() {
 
 export function ConnectionCardSkeleton() {
   return (
-    <div className="cyber-chamfer-sm space-y-3 rounded-xl border border-ink-800 bg-ink-900/60 p-4">
+    <div className="space-y-3 rounded-xl border border-ink-800 bg-ink-900/60 p-4">
       <div className="flex items-center gap-3">
         <Skeleton className="h-8 w-8 rounded-lg" />
         <Skeleton className="h-4 w-32" />

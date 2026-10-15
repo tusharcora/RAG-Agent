@@ -49,7 +49,7 @@ export function Modal({ isOpen, onOpenChange, variant = "center", isDismissable 
         <Dialog
           aria-label={props["aria-label"]}
           className={cx(
-            "cyber-chamfer-sm border border-ink-800 bg-ink-900 shadow-panel outline-none",
+            "border border-ink-800 bg-ink-900 shadow-panel outline-none",
             isDrawer ? "h-full w-full max-w-md overflow-y-auto" : "w-full max-w-md rounded-xl p-4",
             className,
           )}

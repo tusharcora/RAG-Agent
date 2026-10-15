@@ -7,7 +7,7 @@ import { useAuth } from "@/lib/auth-context";
 import { toast } from "@/lib/toast";
 import { DocumentTable } from "@/components/knowledge-base/DocumentTable";
 import { DocumentDetailDrawer } from "@/components/knowledge-base/DocumentDetailDrawer";
-import { StatTile } from "@/components/StatTile";
+import { PageHeader } from "@/components/PageHeader";
 import { TableCard } from "@/components/application/table/table";
 import { Input } from "@/components/base/input/input";
 import { NativeSelect } from "@/components/base/select/select-native";
@@ -77,14 +77,19 @@ export default function KnowledgeBasePage() {
   }
 
   return (
-    <div className="mx-auto flex h-[calc(100vh-57px)] max-w-none">
-      <div className="flex min-w-0 flex-1 flex-col px-6 py-6">
-        <h1 className="mb-1 text-xl font-semibold text-ink-100">Knowledge Base</h1>
-        <p className="mb-4 text-sm text-ink-500">Everything ingested from Notion and Jira, and what it chunks into.</p>
-
-        <div className="mb-4 flex items-center gap-3 text-xs text-ink-500">
-          <StatTile label="Documents" value={total} />
-        </div>
+    <div className="mx-auto flex h-screen max-w-none">
+      <div className="flex min-w-0 flex-1 flex-col gap-8 px-6 py-10 md:px-14">
+        <PageHeader
+          eyebrow="KNOWLEDGE BASE"
+          title="Everything we've read"
+          description="Everything ingested from Notion and Jira, and what it chunks into."
+          trailing={
+            <div className="flex flex-col items-end gap-1">
+              <span className="font-serif text-[48px] leading-none text-ink-100">{total.toLocaleString()}</span>
+              <span className="text-xs text-ink-400">documents indexed</span>
+            </div>
+          }
+        />
 
         <TableCard.Root className="flex min-h-0 flex-1 flex-col">
           <TableCard.Header

@@ -26,7 +26,11 @@ export default function LoginPage() {
       if (err instanceof ApiError && (err.status === 401 || err.status === 429)) {
         setError(err.status === 429 ? "Too many attempts — try again in a minute." : "Invalid email or password.");
       } else {
-        setError("Couldn't reach the server. Check your connection and try again.");
+        setError(
+          err instanceof ApiError
+            ? `The server returned an error (${err.status}). Check the API logs and try again.`
+            : "Couldn't reach the server. Check your connection and try again.",
+        );
       }
     } finally {
       setSubmitting(false);
@@ -34,12 +38,8 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="relative flex min-h-[calc(100vh-57px)] items-center justify-center px-4">
-      <div
-        aria-hidden
-        className="pointer-events-none absolute left-1/2 top-1/4 h-96 w-96 -translate-x-1/2 rounded-full bg-coral-500/10 blur-[100px]"
-      />
-      <div className="cyber-chamfer relative w-full max-w-sm rounded-2xl border border-ink-800 bg-ink-900/60 p-7 shadow-panel">
+    <div className="relative flex min-h-screen items-center justify-center px-4">
+      <div className="relative w-full max-w-sm rounded-2xl border border-ink-800 bg-ink-900/60 p-7 shadow-panel">
         <h1 className="mb-1 text-lg font-semibold text-ink-50">Welcome back</h1>
         <p className="mb-6 text-sm text-ink-500">Log in to your organization's knowledge base.</p>
 
@@ -53,7 +53,7 @@ export default function LoginPage() {
             isRequired
             autoComplete="current-password"
           />
-          {error && <p className="text-sm text-coral-400">{error}</p>}
+          {error && <p className="text-sm text-error-primary">{error}</p>}
           <Button type="submit" isDisabled={submitting} isLoading={submitting} className="w-full" size="lg">
             Log in
           </Button>
@@ -69,7 +69,7 @@ export default function LoginPage() {
 
         <p className="mt-6 text-center text-sm text-ink-500">
           No account?{" "}
-          <Link href="/signup" className="text-coral-400 hover:text-coral-300">
+          <Link href="/signup" className="text-ink-100 underline underline-offset-2 hover:text-ink-300">
             Sign up
           </Link>
         </p>

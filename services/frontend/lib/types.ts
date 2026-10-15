@@ -14,6 +14,8 @@ export interface ChatMessage {
   citedIndices?: number[];
   truncated?: boolean; // true if Gemini hit max_output_tokens before finishing
   feedback?: "up" | "down" | null;
+  model?: string; // e.g. "local · qwen3.6:35b", live-streamed turns only
+  elapsedMs?: number;
 }
 
 export interface SessionSummary {
@@ -117,6 +119,41 @@ export interface DlqEvent {
 export interface InviteResult {
   token: string;
   expires_at: string;
+}
+
+export type LlmProvider = "gemini" | "anthropic" | "openai" | "local";
+
+export interface LlmProviderConfig {
+  model: string | null;
+  base_url: string | null;
+  has_api_key: boolean;
+  api_key_hint: string | null;
+}
+
+export interface LlmSettings {
+  provider: LlmProvider;
+  // Saved config for every configurable provider, kept when switching.
+  providers: Record<"anthropic" | "openai" | "local", LlmProviderConfig>;
+  model: string | null;
+  base_url: string | null;
+  has_api_key: boolean;
+  api_key_hint: string | null;
+  default_model: string;
+}
+
+export interface LlmSettingsInput {
+  provider: LlmProvider;
+  model?: string | null;
+  base_url?: string | null;
+  // Omit to keep the saved key; remove one with deleteLlmKey().
+  api_key?: string;
+}
+
+export interface LlmTestResult {
+  ok: boolean;
+  models: string[];
+  error: string | null;
+  sample: string | null;
 }
 
 export interface ServiceTokenSummary {
