@@ -14,6 +14,7 @@ from app.core.db import get_session
 from app.core.queue import publish_event
 from app.core.ratelimit import rate_limiter
 from app.integrations.connection_state import require_connected
+from app.integrations.github_sync import sync_github_connection
 from app.integrations.jira_auth import ensure_fresh_token
 from app.models.rag import Document, OAuthConnection
 
@@ -214,3 +215,12 @@ async def sync_jira(
 ) -> dict:
     connection = await _get_connection(session, "jira", auth.org_id)
     return await sync_jira_connection(session, connection)
+
+
+@router.post("/github", dependencies=[Depends(rate_limiter("sync_github", settings.rate_limit_sync_per_minute))])
+async def sync_github(
+    auth: AuthContext = Depends(require_auth_or_service_token), session: AsyncSession = Depends(get_session)
+) -> dict:
+    """Enumeration lives in app/integrations/github_sync.py (budgeted, versioned, round-robin)."""
+    connection = await _get_connection(session, "github", auth.org_id)
+    return await sync_github_connection(session, connection)

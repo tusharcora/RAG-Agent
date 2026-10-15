@@ -9,6 +9,7 @@ from app.api.routes.sync import sync_jira_connection, sync_notion_connection
 from app.core.config import settings
 from app.core.db import get_session
 from app.integrations.connection_state import is_disconnected
+from app.integrations.github_sync import sync_github_connection
 from app.models.rag import OAuthConnection
 
 logger = logging.getLogger(__name__)
@@ -60,6 +61,8 @@ async def _sync_all_connections() -> None:
                     result = await sync_notion_connection(session, connection)
                 elif connection.provider == "jira":
                     result = await sync_jira_connection(session, connection)
+                elif connection.provider == "github":
+                    result = await sync_github_connection(session, connection)
                 else:
                     continue
             logger.info(

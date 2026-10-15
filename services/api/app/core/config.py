@@ -89,6 +89,9 @@ class Settings(BaseSettings):
 
     max_pages_per_sync: int = 200
     max_issues_per_sync: int = 200
+    # GitHub (app/integrations/github_sync.py): items enqueued per sync, and how far back issues/PRs are synced.
+    max_github_items_per_sync: int = 500
+    github_history_days: int = 365
 
     # Periodic re-sync (app/core/auto_sync.py): re-runs the same enumerate+publish
     # logic /sync/{provider} exposes manually, for every connection, on an interval —
