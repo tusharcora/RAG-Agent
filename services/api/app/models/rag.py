@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Boolean, Computed, ForeignKey, Integer, Text, TIMESTAMP, UniqueConstraint, func
+from sqlalchemy import BigInteger, Boolean, Computed, ForeignKey, Integer, Text, TIMESTAMP, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -16,7 +16,7 @@ class Base(DeclarativeBase):
 
 # create_type=False: the rag_source enum type is created by
 # infra/postgres/002_rag_schema.sql, not by SQLAlchemy.
-RagSourceType = PG_ENUM("notion", "jira", name="rag_source", create_type=False)
+RagSourceType = PG_ENUM("notion", "jira", "github", name="rag_source", create_type=False)
 
 
 class Organization(Base):
@@ -151,6 +151,10 @@ class OAuthConnection(Base):
     bot_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Set by POST /connections/{id}/disconnect, cleared by a reconnect. While set, nothing syncs it.
     disconnected_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    # infra/postgres/015_github_source.sql: set when GitHub rejects the stored refresh token;
+    # github_rr_offset is the round-robin start across the connection's repos.
+    needs_reconnect_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    github_rr_offset: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
 
@@ -161,7 +165,7 @@ class Document(Base):
     __tablename__ = "documents"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
-    source: Mapped[str] = mapped_column(RagSourceType, nullable=False)  # 'notion' | 'jira'
+    source: Mapped[str] = mapped_column(RagSourceType, nullable=False)  # 'notion' | 'jira' | 'github'
     external_id: Mapped[str] = mapped_column(Text, nullable=False)
     connection_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("oauth_connections.id", ondelete="CASCADE"), nullable=False
@@ -169,6 +173,8 @@ class Document(Base):
     title: Mapped[str] = mapped_column(Text, nullable=False)
     url: Mapped[str] = mapped_column(Text, nullable=False)
     content_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # infra/postgres/015_github_source.sql: the source's own version marker (GitHub blob sha / updated_at).
+    external_version: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_edited_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     synced_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
@@ -302,3 +308,42 @@ class OrgLlmCredential(Base):
     api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     api_key_hint: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class GithubRepo(Base):
+    """Mirrors infra/postgres/015_github_source.sql: a repository a GitHub connection
+    can see, with its per-repo sync cursors (reset whenever the connection's documents are deleted)."""
+
+    __tablename__ = "github_repos"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=func.uuid_generate_v4())
+    connection_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("oauth_connections.id", ondelete="CASCADE"), nullable=False
+    )
+    installation_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    repo_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    full_name: Mapped[str] = mapped_column(Text, nullable=False)
+    html_url: Mapped[str] = mapped_column(Text, nullable=False)
+    default_branch: Mapped[str] = mapped_column(Text, nullable=False)
+    private: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    tree_sha: Mapped[str | None] = mapped_column(Text, nullable=True)
+    issues_cursor: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_full_scan_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+
+    __table_args__ = (UniqueConstraint("connection_id", "repo_id"),)
+
+
+class GithubFailure(Base):
+    """Mirrors infra/postgres/015_github_source.sql: a dead-lettered item, skipped by the
+    sync until its source version differs from `version`."""
+
+    __tablename__ = "github_failures"
+
+    connection_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("oauth_connections.id", ondelete="CASCADE"), primary_key=True
+    )
+    external_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    version: Mapped[str] = mapped_column(Text, nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())

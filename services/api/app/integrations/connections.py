@@ -9,6 +9,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.crypto import encrypt_token
+from app.integrations.github_state import reset_github_state
 from app.integrations.jira_auth import clear_needs_reconnect
 from app.models.rag import Document, OAuthConnection
 
@@ -26,6 +27,7 @@ async def _reuse_row(session: AsyncSession, connection: OAuthConnection, new_wor
             delete(Document).where(Document.connection_id == connection.id).returning(Document.id)
         )
         removed = len(result.all())
+        await reset_github_state(session, connection.id)
         if removed:
             logger.info(
                 "Reconnected %s to a different workspace: removed %d old document(s)", connection.provider, removed

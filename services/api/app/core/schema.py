@@ -54,6 +54,38 @@ STATEMENTS = [
     # 014_connection_disconnect.sql
     "ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS disconnected_at TIMESTAMPTZ",
     "ALTER TABLE oauth_connections ALTER COLUMN access_token DROP NOT NULL",
+    # 015_github_source.sql (nothing here may use the 'github' enum value: it is added in this transaction)
+    "ALTER TYPE rag_source ADD VALUE IF NOT EXISTS 'github'",
+    "ALTER TABLE documents ADD COLUMN IF NOT EXISTS external_version TEXT",
+    "ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS needs_reconnect_at TIMESTAMPTZ",
+    "ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS github_rr_offset INT NOT NULL DEFAULT 0",
+    """
+    CREATE TABLE IF NOT EXISTS github_repos (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        connection_id UUID NOT NULL REFERENCES oauth_connections(id) ON DELETE CASCADE,
+        installation_id BIGINT NOT NULL,
+        repo_id BIGINT NOT NULL,
+        full_name TEXT NOT NULL,
+        html_url TEXT NOT NULL,
+        default_branch TEXT NOT NULL,
+        private BOOLEAN NOT NULL DEFAULT false,
+        tree_sha TEXT,
+        issues_cursor TIMESTAMPTZ,
+        last_full_scan_at TIMESTAMPTZ,
+        UNIQUE (connection_id, repo_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS github_failures (
+        connection_id UUID NOT NULL REFERENCES oauth_connections(id) ON DELETE CASCADE,
+        external_id TEXT NOT NULL,
+        version TEXT NOT NULL,
+        attempts INT NOT NULL DEFAULT 1,
+        last_error TEXT,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (connection_id, external_id)
+    )
+    """,
 ]
 
 

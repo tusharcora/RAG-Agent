@@ -15,6 +15,7 @@ from app.core.crypto import decrypt_token, encrypt_token
 from app.core.db import get_session
 from app.integrations.connection_state import require_connected
 from app.integrations.connections import save_notion_connection
+from app.integrations.github_state import reset_github_state
 from app.integrations.jira_auth import clear_needs_reconnect, ensure_fresh_token, needs_reconnect
 from app.models.event_log import EventLog
 from app.models.rag import ConnectionMember, Document, OAuthConnection
@@ -169,7 +170,9 @@ async def _delete_documents(session: AsyncSession, connection_id: uuid.UUID) -> 
     result = await session.execute(
         delete(Document).where(Document.connection_id == connection_id).returning(Document.id)
     )
-    return len(result.all())
+    removed = len(result.all())
+    await reset_github_state(session, connection_id)
+    return removed
 
 
 @router.post("/{connection_id}/disconnect")
